@@ -1,0 +1,22 @@
+# Local planning, recordings and review sessions
+/context/
+/data/
+/outputs/
+/sessions/
+
+# Python and build artifacts
+/.venv/
+/build/
+/dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Local environment and OS files
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db

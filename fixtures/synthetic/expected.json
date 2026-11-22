@@ -1,0 +1,82 @@
+{
+  "synthetic": true,
+  "origin_utc": "2000-01-01T00:00:00.000000Z",
+  "transect_length_m": 44.2,
+  "sources": {
+    "original": {
+      "path": "original.mseed",
+      "size_bytes": 13824,
+      "sha256": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+      "trace_id": "XX.ORIG..EHZ",
+      "sampling_rate_hz": 1000,
+      "segments": [
+        {
+          "start_utc": "2000-01-01T00:00:00.000000Z",
+          "npts": 2150
+        },
+        {
+          "start_utc": "2000-01-01T00:00:02.200000Z",
+          "npts": 800
+        }
+      ]
+    },
+    "calibration": {
+      "path": "calibration.mseed",
+      "size_bytes": 13824,
+      "sha256": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+      "trace_id": "XX.CALB..EHZ",
+      "sampling_rate_hz": 1000,
+      "segments": [
+        {
+          "start_utc": "2000-01-01T00:00:00.000000Z",
+          "npts": 3000
+        }
+      ]
+    }
+  },
+  "notebook": {
+    "path": "fluvial_seismology/notebooks/instrument_calibration/estimate_n11_hammer_p_wave_velocity.ipynb",
+    "last_change_commit": "b1e156a6117c609ba1cdb72f981bcfeafd793106",
+    "sha256": "ac7cf3ae7d61337831066252a055521f21abca7f7c9c5088e57cef49bacfc139",
+    "fit_cell_zero_based": 11,
+    "residual_cell_zero_based": 4
+  },
+  "strict_lag_bounds_exclusive_s": [
+    -0.06,
+    0.08
+  ],
+  "fits": {
+    "all": {
+      "slope_m_per_s": 262.7856365615,
+      "intercept_m": -2.5048966268,
+      "blow_ids": [
+        "B01",
+        "B02",
+        "B03",
+        "B04",
+        "B05",
+        "B06",
+        "B08"
+      ]
+    },
+    "strict": {
+      "slope_m_per_s": 500.0,
+      "intercept_m": 2.0,
+      "blow_ids": [
+        "B01",
+        "B02",
+        "B03",
+        "B08"
+      ]
+    }
+  },
+  "snuffler_probe": {
+    "blow_id": "B01",
+    "original_segment_start_utc": "2000-01-01T00:00:00.000000Z",
+    "original_sample_index": 360,
+    "original_pick_utc": "2000-01-01T00:00:00.360000Z",
+    "nudged_sample_index": 361,
+    "nudged_pick_utc": "2000-01-01T00:00:00.361000Z",
+    "calibration_pick_utc": "2000-01-01T00:00:00.400000Z"
+  }
+}

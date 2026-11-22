@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The synthetic fixture has tests for byte-for-byte regeneration.
+fixtures/synthetic/*.csv text eol=lf
+fixtures/synthetic/*.json text eol=lf
+fixtures/synthetic/*.mseed binary
