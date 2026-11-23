@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seisslate"
+version = "0.1.0.dev0"
+description = "A local workbench for paired seismic waveform review"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26,<3", "obspy==1.5.2"]
+
+[project.optional-dependencies]
+desktop = ["pyrocko==2026.11.5", "PyQt5==5.15.11", "matplotlib>=3.8"]
+
+[project.gui-scripts]
+seisslate = "seisslate.ui:main"
+
+[tool.setuptools.packages.find]
+include = ["seisslate*"]
