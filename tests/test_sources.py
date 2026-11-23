@@ -1,6 +1,7 @@
 import hashlib
 from pathlib import Path
 import shutil
+from struct import pack_into, unpack_from
 import tempfile
 import unittest
 
@@ -28,7 +29,7 @@ def write_source(path, records):
         )
         for offset_ns, rate, values in records
     ]
-    Stream(traces).write(str(path), format="MSEED", reclen=256)
+    Stream(traces).write(str(path), format="MSEED", encoding="INT32", reclen=256)
 
 
 class SourceTests(unittest.TestCase):
@@ -139,6 +140,41 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(segment.time_ns(2), EPOCH + 666_666_667)
         self.assertEqual(segment.time_ns(3), EPOCH + 1_000_000_000)
         self.assertEqual(self.api.utc_ns("2000-01-01T01:00:00.123456789+01:00"), EPOCH + 123_456_789)
+
+    def test_fractional_header_rate_keeps_contiguous_records_on_one_grid(self):
+        path = self.directory / "fractional-rate.mseed"
+        write_source(path, [(0, 40 / 3, np.arange(500))])
+        self.assertGreater(path.stat().st_size, 256)
+        self.assertEqual(unpack_from(">hh", path.read_bytes(), 32), (40, -3))
+        source = self.api.load_source(path)
+        self.assertEqual(len(source.segments), 1)
+        segment = source.segments[0]
+        self.assertEqual(segment.npts, 500)
+        catalog = self.api.SourceCatalog((source,))
+        for index in (49, 50, 499):
+            timestamp = EPOCH + index * 75 * MS
+            result = catalog.lookup(CHANNEL, timestamp)
+            self.assertEqual(result.status, "exact")
+            self.assertEqual(result.candidates, (segment.ref(index),))
+            self.assertEqual(catalog.time_ns(result.candidates[0]), timestamp)
+        np.testing.assert_array_equal(segment.data, np.arange(500))
+
+    def test_blockette_100_rate_overrides_nominal_fixed_header_rate(self):
+        path = self.directory / "actual-rate.mseed"
+        write_source(path, [(0, 10, [7, 9, 11])])
+        record = bytearray(path.read_bytes())
+        data_offset, first_blockette = unpack_from(">HH", record, 44)
+        # Move the three INT32 samples to fit the 12-byte Blockette 100.
+        record[data_offset + 12:data_offset + 24] = record[data_offset:data_offset + 12]
+        pack_into(">HHf4x", record, data_offset, 100, 0, 12.5)
+        pack_into(">H", record, first_blockette + 2, data_offset)
+        pack_into(">H", record, 44, data_offset + 12)
+        record[39] += 1
+        path.write_bytes(record)
+        segment = self.api.load_source(path).segments[0]
+        self.assertEqual(segment.sampling_rate_hz, 12.5)
+        self.assertEqual(segment.time_ns(2), EPOCH + 160 * MS)
+        np.testing.assert_array_equal(segment.data, [7, 9, 11])
 
     def test_half_nanosecond_rounding_preserves_times_across_exact_grid_partitions(self):
         whole = self.api.Segment("hash", CHANNEL, "whole", EPOCH, 400_000_000, np.arange(5))

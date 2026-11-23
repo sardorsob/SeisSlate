@@ -11,11 +11,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
+from struct import unpack_from
 from types import MappingProxyType
 from typing import Iterable, Literal, Mapping
 
 import numpy as np
-from obspy import Stream, read
+from obspy import Trace, read
 from obspy.io.mseed.util import get_record_information
 
 
@@ -81,7 +82,7 @@ class Segment:
         channel: str,
         segment_id: str,
         start_ns: int,
-        sampling_rate_hz: float,
+        sampling_rate_hz: float | Fraction,
         data: np.ndarray,
     ) -> None:
         if type(start_ns) is not int:
@@ -90,13 +91,14 @@ class Segment:
             raise ValueError("Sample rate must be positive and representable in nanoseconds")
         if data.ndim != 1 or not data.size or data.dtype.kind not in "iuf":
             raise ValueError("A segment requires a nonempty numeric sample array")
+        rate = sampling_rate_hz if isinstance(sampling_rate_hz, Fraction) else Fraction(str(sampling_rate_hz))
         object.__setattr__(self, "source_hash", source_hash)
         object.__setattr__(self, "channel", channel)
         object.__setattr__(self, "segment_id", segment_id)
         object.__setattr__(self, "start_ns", start_ns)
-        object.__setattr__(self, "sampling_rate_hz", sampling_rate_hz)
+        object.__setattr__(self, "sampling_rate_hz", float(sampling_rate_hz))
         object.__setattr__(self, "npts", data.size)
-        object.__setattr__(self, "_period_ns", NS_PER_SECOND / Fraction(str(sampling_rate_hz)))
+        object.__setattr__(self, "_period_ns", NS_PER_SECOND / rate)
         object.__setattr__(self, "_data", data.tobytes())
         object.__setattr__(self, "_dtype", data.dtype)
 
@@ -146,7 +148,32 @@ class _RecordRun:
     records: list[bytes] = field(default_factory=list)
 
 
-def _read_traces(contents: bytes) -> Stream:
+def _record_sample_rate(record: bytes, byteorder: str) -> Fraction:
+    """Decode the SEED 2.4 sample rate without rounding its integer ratio."""
+    blockette_offset, = unpack_from(f"{byteorder}H", record, 46)
+    while blockette_offset:
+        if not 48 <= blockette_offset <= len(record) - 4:
+            raise ValueError("MiniSEED blockette is outside its data record")
+        blockette_type, next_offset = unpack_from(f"{byteorder}HH", record, blockette_offset)
+        if blockette_type == 100:
+            if blockette_offset + 12 > len(record):
+                raise ValueError("Truncated MiniSEED sample rate blockette")
+            rate, = unpack_from(f"{byteorder}f", record, blockette_offset + 4)
+            if not 0 < rate <= NS_PER_SECOND:
+                raise ValueError("Sample rate must be positive and representable in nanoseconds")
+            return Fraction(rate)
+        if next_offset and next_offset <= blockette_offset:
+            raise ValueError("MiniSEED blockette offsets must increase")
+        blockette_offset = next_offset
+
+    factor, multiplier = unpack_from(f"{byteorder}hh", record, 32)
+    rate = Fraction(1, -factor) if factor < 0 else Fraction(factor)
+    if multiplier < 0:
+        return rate / -multiplier
+    return rate * multiplier
+
+
+def _read_traces(contents: bytes) -> list[tuple[Trace, Fraction]]:
     # ObsPy's default reader can coalesce records separated by up to half a
     # sample period. Group exactly contiguous original grids before decoding.
     file = io.BytesIO(contents)
@@ -164,11 +191,11 @@ def _read_traces(contents: bytes) -> Stream:
         offset += length
         if not info["npts"]:
             continue
-        rate = info["samp_rate"]
+        rate = _record_sample_rate(record, info["byteorder"])
         if not 0 < rate <= NS_PER_SECOND:
             raise ValueError("Sample rate must be positive and representable in nanoseconds")
         start_ns = info["starttime"].ns
-        period_ns = NS_PER_SECOND / Fraction(str(rate))
+        period_ns = NS_PER_SECOND / rate
         key = tuple(info[name] for name in ("network", "station", "location", "channel"))
         run = latest.get(key)
         if run is None or run.period_ns != period_ns or run.start_ns + run.npts * run.period_ns != start_ns:
@@ -177,12 +204,12 @@ def _read_traces(contents: bytes) -> Stream:
         run.records.append(record)
         run.npts += info["npts"]
 
-    traces = Stream()
+    traces: list[tuple[Trace, Fraction]] = []
     for run in runs:
         decoded = read(io.BytesIO(b"".join(run.records)), format="MSEED")
         if sum(trace.stats.npts for trace in decoded) != run.npts:
             raise ValueError("MiniSEED decoding did not preserve the original sample count")
-        traces.extend(decoded)
+        traces.extend((trace, run.period_ns) for trace in decoded)
     return traces
 
 
@@ -201,17 +228,17 @@ def load_source(
     if expected_sha256 is not None and fingerprint != expected_sha256:
         raise SourceIdentityError(f"Source SHA-256 does not match for {path}")
     traces = _read_traces(contents)
-    traces.sort(keys=["network", "station", "location", "channel", "starttime", "sampling_rate", "npts"])
+    traces.sort(key=lambda item: (item[0].id, item[0].stats.starttime.ns, -item[1], item[0].stats.npts))
     segments = tuple(
         Segment(
             fingerprint,
             trace.id,
             f"{fingerprint}:{index}",
             trace.stats.starttime.ns,
-            trace.stats.sampling_rate,
+            NS_PER_SECOND / period_ns,
             trace.data,
         )
-        for index, trace in enumerate(traces)
+        for index, (trace, period_ns) in enumerate(traces)
     )
     if not segments:
         raise ValueError(f"No samples found in {path}")
