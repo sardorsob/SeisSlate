@@ -212,28 +212,31 @@ def analyze(
 ) -> Analysis:
     """Fit original imported observations and the currently applied sample references.
 
-    Initial requested membership records the imported strict subset. It remains
-    fixed for both frozen fits regardless of any applied edits or sign reversal.
+    The strict baseline uses imported lags in the original receiver order.
+    Its membership is fixed across review edits and sign reversal.
     Mapping offsets report selected original sample minus imported UTC by receiver.
     """
     sign = -1 if reverse else 1
     imported = {blow.blow_id: blow for blow in initial.blows}
     receivers = {receiver.role: receiver for receiver in applied.receivers}
-    baseline_all = _fit(tuple(
-        _observation(blow, True, blow.original.imported_ns, blow.calibration.imported_ns, sign)
-        for blow in initial.blows
-    ))
-    baseline_strict = _fit(tuple(
-        _observation(blow, blow.included, blow.original.imported_ns, blow.calibration.imported_ns, sign)
-        for blow in initial.blows
-    ))
+    all_rows = []
+    strict_rows = []
+    for blow in initial.blows:
+        original_ns, calibration_ns = blow.original.imported_ns, blow.calibration.imported_ns
+        strict = (
+            original_ns is not None
+            and calibration_ns is not None
+            and in_strict_lag_window(original_ns - calibration_ns)
+        )
+        all_rows.append(_observation(blow, True, original_ns, calibration_ns, sign))
+        strict_rows.append(_observation(blow, strict, original_ns, calibration_ns, sign))
     reviewed = _fit(tuple(
         _reviewed_observation(catalog, applied, blow, imported.get(blow.blow_id, blow), receivers, sign)
         for blow in applied.blows
     ))
     return Analysis(
-        baseline_all,
-        baseline_strict,
+        _fit(tuple(all_rows)),
+        _fit(tuple(strict_rows)),
         reviewed,
         None,
         "Field velocity withheld. Same-blow phase pairing, receiver clocks, and geometry require field validation.",

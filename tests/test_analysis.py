@@ -146,13 +146,18 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(reviewed.calibration_mapping_offset_ns, 0)
         self.assertEqual(reviewed.lag_ns, -40_000_000)
 
-    def test_recorded_strict_membership_is_kept_even_with_a_different_imported_lag(self):
-        first = self.initial.blows[0]
-        pick = replace(first.original, imported_ns=first.calibration.imported_ns + 80_000_000)
-        state = replace(self.initial, blows=(replace(first, original=pick), *self.initial.blows[1:]))
-        fit = self.analyze(self.catalog, state, state).baseline_strict
-        self.assertIn("B01", fit.blow_ids)
-        self.assertEqual(by_id(fit, "B01").lag_ns, 80_000_000)
+    def test_frozen_strict_membership_is_independent_of_initial_review_flags(self):
+        from seisslate.review import set_inclusion
+
+        state = set_inclusion(self.initial, "B06", True, "Include the upper-bound observation")
+        state = set_inclusion(state, "B03", False, "Exclude this observation from review")
+        result = self.analyze(self.catalog, state, state)
+        upper_bound = by_id(result.baseline_strict, "B06")
+        self.assertEqual(upper_bound.lag_ns, 80_000_000)
+        self.assertFalse(upper_bound.requested_included)
+        self.assertEqual(result.baseline_strict.blow_ids, ("B01", "B02", "B03", "B08"))
+        self.assertTrue(by_id(result.reviewed, "B06").requested_included)
+        self.assertEqual(result.reviewed.blow_ids, ("B01", "B02", "B06", "B08"))
 
     def test_invalid_observations_and_fit_only_exclusions_are_distinct(self):
         from seisslate.review import set_inclusion, set_pair_status
