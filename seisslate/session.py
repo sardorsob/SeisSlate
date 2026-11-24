@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, fields
+from hashlib import file_digest
 from math import isfinite
 from pathlib import Path
 from sys import float_info
@@ -15,11 +16,12 @@ from tempfile import NamedTemporaryFile
 from typing import IO, Any, cast
 
 from .analysis import METHOD_VERSION, analyze
+from .groups import GroupWindow
 from .review import Blow, PairStatus, Pick, Receiver, ReviewHistory, ReviewState, Revision, Role
 from .sources import SampleRef, SampleSpan, SourceCatalog, SourceIdentityError, load_source
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class SessionSourceError(ValueError):
@@ -43,8 +45,8 @@ def _object(raw: object, label: str, expected: set[str]) -> dict[str, Any]:
     return raw
 
 
-def _record(raw: object, cls: type) -> dict[str, Any]:
-    return _object(raw, cls.__name__, {field.name for field in fields(cls)})
+def _record(raw: object, cls: type, *, omitted: tuple[str, ...] = ()) -> dict[str, Any]:
+    return _object(raw, cls.__name__, {field.name for field in fields(cls)}.difference(omitted))
 
 
 def _require[T](value: object, kind: type[T], field: str) -> T:
@@ -85,8 +87,8 @@ def _pick(raw: object) -> Pick:
     )
 
 
-def _blow(raw: object) -> Blow:
-    value = _record(raw, Blow)
+def _blow(raw: object, schema_version: int) -> Blow:
+    value = _record(raw, Blow, omitted=("group_id",) if schema_version == 1 else ())
     return Blow(
         _require(value["blow_id"], str, "blow ID"),
         _pick(value["original"]),
@@ -97,6 +99,7 @@ def _blow(raw: object) -> Blow:
         _require(value["reason"], str, "review reason"),
         cast(PairStatus, _require(value["pair_status"], str, "pair status")),
         _require(value["pair_reason"], str, "pair reason"),
+        value.get("group_id"),
     )
 
 
@@ -118,16 +121,20 @@ def _receiver(raw: object) -> Receiver:
     )
 
 
-def _revision(raw: object) -> Revision:
+def _revision(raw: object, schema_version: int) -> Revision:
     value = _record(raw, Revision)
-    state = _record(value["state"], ReviewState)
+    state = _record(value["state"], ReviewState, omitted=("groups",) if schema_version == 1 else ())
     return Revision(
         _require(value["revision_id"], int, "revision ID"),
         ReviewState(
-            tuple(_blow(blow) for blow in _require(state["blows"], list, "observations")),
+            tuple(_blow(blow, schema_version) for blow in _require(state["blows"], list, "observations")),
             tuple(_span(span) for span in _require(state["masks"], list, "masks")),
             tuple(_receiver(receiver) for receiver in _require(state["receivers"], list, "receivers")),
             _require(state["timing_evidence"], str, "timing evidence"),
+            tuple(
+                GroupWindow(**_record(raw_group, GroupWindow))
+                for raw_group in _require(state.get("groups", []), list, "groups")
+            ),
         ),
         _require(value["reason"], str, "revision reason"),
     )
@@ -215,11 +222,12 @@ def load_session(
     document = _object(raw, "session", {
         "schema_version", "method_version", "sources", "revisions", "cursor", "next_revision_id",
     })
-    if _require(document["schema_version"], int, "schema version") != SCHEMA_VERSION:
+    schema_version = _require(document["schema_version"], int, "schema version")
+    if schema_version not in (1, SCHEMA_VERSION):
         raise ValueError("Unsupported session schema version")
     if _require(document["method_version"], str, "method version") != METHOD_VERSION:
         raise ValueError("Unsupported analysis method version")
-    revisions = tuple(_revision(raw) for raw in _require(document["revisions"], list, "revisions"))
+    revisions = tuple(_revision(raw, schema_version) for raw in _require(document["revisions"], list, "revisions"))
     if not revisions:
         raise ValueError("Session must contain an initial revision")
     history = ReviewHistory(
@@ -233,7 +241,7 @@ def load_session(
     return catalog, history
 
 
-def _protect_recordings(path: Path, catalog: SourceCatalog) -> None:
+def _protect_sources(path: Path, catalog: SourceCatalog, log_fingerprints: set[str]) -> None:
     resolved = path.resolve()
     for source in catalog.sources:
         if resolved == source.path.resolve():
@@ -244,10 +252,21 @@ def _protect_recordings(path: Path, catalog: SourceCatalog) -> None:
             same_file = False
         if same_file:
             raise ValueError("Destination aliases a source recording")
+    if log_fingerprints and path.is_file():
+        try:
+            with path.open("rb") as file:
+                fingerprint = file_digest(file, "sha256").hexdigest()
+        except FileNotFoundError:
+            return
+        if fingerprint in log_fingerprints:
+            raise ValueError("Destination matches an imported group log. Choose another file.")
 
 
-def _atomic_write(path: Path, catalog: SourceCatalog, write: Callable[[IO[str]], None]) -> None:
-    _protect_recordings(path, catalog)
+def _atomic_write(
+    path: Path, catalog: SourceCatalog, history: ReviewHistory, write: Callable[[IO[str]], None],
+) -> None:
+    log_fingerprints = {group.source_sha256 for revision in history.revisions for group in revision.state.groups}
+    _protect_sources(path, catalog, log_fingerprints)
     temporary = None
     try:
         with NamedTemporaryFile(
@@ -257,7 +276,7 @@ def _atomic_write(path: Path, catalog: SourceCatalog, write: Callable[[IO[str]],
             write(file.file)
             file.flush()
             os.fsync(file.fileno())
-        _protect_recordings(path, catalog)
+        _protect_sources(path, catalog, log_fingerprints)
         os.replace(temporary, path)
     finally:
         if temporary is not None:
@@ -298,7 +317,7 @@ def save_session(path: Path | str, catalog: SourceCatalog, history: ReviewHistor
         json.dump(document, file, ensure_ascii=False, indent=2, allow_nan=False)
         file.write("\n")
 
-    _atomic_write(path, catalog, write)
+    _atomic_write(path, catalog, history, write)
 
 
 _PICK_COLUMNS = (
@@ -353,4 +372,4 @@ def export_csv(path: Path | str, catalog: SourceCatalog, history: ReviewHistory)
                 *_pick_cells(catalog, blow.calibration, row.calibration_mapping_offset_ns),
             ))
 
-    _atomic_write(Path(path), catalog, write)
+    _atomic_write(Path(path), catalog, history, write)

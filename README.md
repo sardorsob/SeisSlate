@@ -6,6 +6,8 @@ SeisSlate is a local desktop workbench for reviewing first arrivals from hammer 
 
 The pilot uses Pyrocko Snuffler for waveform navigation and selection. The checked-in example uses synthetic recordings. Windows workstation testing and field validation are pending. [Pilot validation procedure](docs/pilot-validation.md)
 
+Import a hammer-group CSV to navigate approximate strike windows and check receiver coverage and metadata before making picks. [Group review and CSV format](docs/pilot-validation.md#hammer-group-review)
+
 The example includes closely spaced strikes, a deliberately mistimed pick, and an arrival missing because of a recording gap. The fit relates signed distance difference in metres to signed arrival delay in seconds, both calculated as original minus calibration. The two imported reference fits use all available pairs and the strict interval `−0.06 < delay < 0.08` seconds. Subsequent review edits leave that baseline fixed. The displayed slope describes the numerical fit. Interpreting field velocity requires evidence about blow pairing, clocks and geometry. [Baseline table](fixtures/synthetic/baseline.csv) · [Fixture manifest](fixtures/synthetic/expected.json)
 
 ## Install the desktop pilot

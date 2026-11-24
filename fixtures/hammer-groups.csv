@@ -1,0 +1,4 @@
+group_id,start_utc,end_utc,duration_s,source_position_id,original_channel,calibration_channel,timing_note,geometry_note
+review-start,2000-01-01T00:00:00.300Z,2000-01-01T00:00:01.000Z,,,XX.ORIG..EHZ,XX.CALB..EHZ,Synthetic common clock,
+gap-check,2000-01-01T00:00:02.100Z,,0.15,fixture-point-07,XX.ORIG..EHZ,XX.CALB..EHZ,,Synthetic geometry for the gap case
+id-check,2000-01-01T00:00:02.400Z,2000-01-01T00:00:02.700Z,,fixture-point-08,XX.OTHER..EHZ,XX.CALB..EHZ,,

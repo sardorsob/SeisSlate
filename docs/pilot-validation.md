@@ -9,6 +9,16 @@ Use the synthetic recordings first. Their [manifest](../fixtures/synthetic/expec
 3. Double-click the original receiver's waveform, then drag across a short interval that covers the revised B01 arrival. Select **Mask interval** and **Apply**. Check that the calibration pick remains, the lag becomes unavailable, and requested fit inclusion is retained. Mark the interval again, select **Restore interval**, and apply. Check that the lag returns. Use **Toggle fit inclusion** separately and check that its lag stays visible.
 4. Select **Save review…** and **Export CSV…**. Quit, launch a fresh process, and reopen the review. Compare the picks, masks, fit membership and coefficients with the prior export. Undo and redo the last edit. Check that a moved source with matching bytes can be relinked and that a different recording is rejected.
 
+## Hammer-group review
+
+Open **Synthetic example**, select the **Hammer groups** tab, and use **Import group CSV…** with [the example file](../fixtures/hammer-groups.csv). Preview the windows, then select **Apply** to add them to the review or **Cancel preview** to discard the import. Select a group to zoom the waveforms to its UTC window. Use **Next unresolved** to step through the queue or through unresolved blows.
+
+The evidence panel compares each declared receiver channel with the embedded channel and reports recorded coverage in the group window. The example includes a recording gap and a channel conflict. A timing or geometry note is a claim to review. **Mark reviewed** records that you inspected the window. **Add blow to group…** starts an individual observation linked to that group. Confirm the association and the arrivals separately.
+
+The CSV uses UTF-8 and requires `group_id` and `start_utc`. Give each row either `end_utc` or `duration_s`, in seconds. Windows include their start and exclude their end. Enter ISO 8601 times with `Z` or `+00:00`. Optional columns are `time_basis`, `source_position_id`, `original_channel`, `calibration_channel`, `timing_note`, and `geometry_note`. Use the receiver columns for the exact expected channel IDs. The review stores each row's source filename, SHA-256 and row number.
+
+Check that applying the import creates zero picks and leaves the existing fit unchanged. Undo, redo, and reopen the session. Verify that the group windows and evidence survive and that a CSV with an invalid or duplicate row produces a line-level error without changing the review. Keep the source log and write the reviewed CSV to a separate file. Earlier sessions open with their existing history and an empty group queue. Saving writes session version 2, which requires this version of the workbench or later.
+
 ## Windows workstation
 
 Install the [desktop pilot](../README.md#install-the-desktop-pilot) from the checkout. Use x64 CPython 3.13. If the guest is Windows 11 Arm, select the x64 Python installer and check that the environment reports `win-amd64`. This exercises the packaged x64 dependencies through Windows emulation. Record VM results separately from results on the intended workstation. [Windows on Arm emulation](https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation) · [Pyrocko release wheels](https://pypi.org/project/pyrocko/2026.11.5/#files)
