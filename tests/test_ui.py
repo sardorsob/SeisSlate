@@ -34,11 +34,15 @@ class WorkbenchTest(TestCase):
                 QTest.mouseClick(button, Qt.LeftButton)
                 QApplication.processEvents()
 
-            workbench.canvas.draw()
+            canvas = workbench.canvas
+            canvas.draw()
             row = next(row for row in workbench.result.reviewed.observations if row.blow_id == "B03")
             x, y = workbench.axes.transData.transform((row.lag_ns / 1e6, row.dx_m))
-            QTest.mouseClick(workbench.canvas, Qt.LeftButton,
-                             pos=QPoint(round(x), workbench.canvas.height() - round(y)))
+            # Convert Matplotlib's physical pixels to Qt's logical mouse coordinates.
+            ratio = canvas.device_pixel_ratio
+            height = canvas.get_width_height()[1]
+            point = QPoint(round(x / ratio), round(height - y / ratio))
+            QTest.mouseClick(canvas, Qt.LeftButton, pos=point)
             self.assertEqual(workbench.selected_blow_id, "B03")
             self.assertTrue(workbench.table.item(2, 0).isSelected())
 

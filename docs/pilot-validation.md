@@ -11,6 +11,15 @@ Use the synthetic recordings first. Their [manifest](../fixtures/synthetic/expec
 
 ## Windows workstation
 
+Install the [desktop pilot](../README.md#install-the-desktop-pilot) from the checkout. Use x64 CPython 3.13. If the guest is Windows 11 Arm, select the x64 Python installer and check that the environment reports `win-amd64`. This exercises the packaged x64 dependencies through Windows emulation. Record VM results separately from results on the intended workstation. [Windows on Arm emulation](https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation) · [Pyrocko release wheels](https://pypi.org/project/pyrocko/2026.11.5/#files)
+
+```powershell
+& .\.venv\Scripts\python.exe -c "import sysconfig; print(sysconfig.get_platform())"
+& .\.venv\Scripts\python.exe -B tools\check_pilot.py
+```
+
+The runner checks the synthetic fixture, the application tests including Qt interactions, and the Snuffler sample-nudge probe. Use the default Qt backend on Windows. The runner reports the actual backend, so you can label a headless run correctly. It uses temporary Pyrocko and Matplotlib settings. Snuffler still uses its standard user plugin directory. Record the runner output, then open `.venv\Scripts\seisslate.exe` from File Explorer and complete the [synthetic review](#synthetic-review).
+
 Run the synthetic review on the intended Windows workstation. Record the installation method, whether administrator rights were needed during setup, and how the analyst launched the workbench from the desktop. Check native file dialogs, resize and 100% and 150% scaling. Repeat the save and reopen in a folder whose name contains spaces and non-ASCII characters. For a recovery check, work on a disposable copy and verify that a failed save leaves a complete readable review. Record the time from applying an edit to seeing the consistent waveform, table and fit. Include the data size and machine details with latency results.
 
 ### Snuffler interaction probe
