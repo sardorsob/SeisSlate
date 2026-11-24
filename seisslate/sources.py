@@ -10,6 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fractions import Fraction
+from math import ceil
 from pathlib import Path
 from struct import unpack_from
 from types import MappingProxyType
@@ -110,6 +111,11 @@ class Segment:
     def end_ns(self) -> int:
         """UTC time of this segment's last sample."""
         return self.time_ns(self.npts - 1)
+
+    @property
+    def stop_ns(self) -> int:
+        """Exclusive coverage bound on the integer UTC nanosecond grid."""
+        return ceil(self.start_ns + self.npts * self._period_ns)
 
     def _validate_index(self, index: int) -> None:
         if type(index) is not int or not 0 <= index < self.npts:

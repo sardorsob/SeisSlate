@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from math import isfinite
 from typing import Iterable, Literal
 
+from .groups import GroupWindow
 from .sources import SampleRef, SampleSpan, SourceCatalog
 
 
@@ -50,6 +51,7 @@ class Blow:
     reason: str = ""
     pair_status: PairStatus = "confirmed"
     pair_reason: str = ""
+    group_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.blow_id, str) or not self.blow_id.strip():
@@ -58,6 +60,8 @@ class Blow:
             raise ValueError("Unknown pair status")
         if type(self.included) is not bool:
             raise ValueError("Requested fit inclusion must be boolean")
+        if self.group_id is not None and (type(self.group_id) is not str or not self.group_id.strip()):
+            raise ValueError("Group ID must be nonempty text or null")
 
 
 @dataclass(frozen=True)
@@ -66,13 +70,21 @@ class ReviewState:
     masks: tuple[SampleSpan, ...] = ()
     receivers: tuple[Receiver, ...] = ()
     timing_evidence: str = ""
+    groups: tuple[GroupWindow, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "blows", tuple(self.blows))
         object.__setattr__(self, "masks", _merge_spans(self.masks))
         object.__setattr__(self, "receivers", tuple(self.receivers))
+        object.__setattr__(self, "groups", tuple(self.groups))
         if len({blow.blow_id for blow in self.blows}) != len(self.blows):
             raise ValueError("Blow IDs must be unique")
+        group_ids = {group.group_id for group in self.groups}
+        if len(group_ids) != len(self.groups):
+            raise ValueError("Group IDs must be unique")
+        for blow in self.blows:
+            if blow.group_id is not None and blow.group_id not in group_ids:
+                raise ValueError(f"Blow {blow.blow_id} links to unknown group {blow.group_id!r}")
         if len({receiver.role for receiver in self.receivers}) != len(self.receivers):
             raise ValueError("Receiver roles must be unique")
         if len(self.receivers) == 2:
@@ -220,6 +232,26 @@ def add_blow(state: ReviewState, blow: Blow) -> ReviewState:
     return replace(state, blows=state.blows + (blow,))
 
 
+def add_groups(state: ReviewState, groups: Iterable[GroupWindow]) -> ReviewState:
+    """Stage a group metadata batch as one review edit."""
+    additions = tuple(groups)
+    seen = {group.group_id for group in state.groups}
+    for group in additions:
+        if group.group_id in seen:
+            raise ValueError(f"Line {group.source_row}: duplicate group ID {group.group_id!r}")
+        seen.add(group.group_id)
+    return replace(state, groups=state.groups + additions)
+
+
+def set_group_reviewed(state: ReviewState, group_id: str, reviewed: bool) -> ReviewState:
+    """Record the analyst's review of a group alongside ordinary history."""
+    if not any(group.group_id == group_id for group in state.groups):
+        raise ValueError(f"Unknown group ID {group_id!r}")
+    return replace(state, groups=tuple(
+        replace(group, reviewed=reviewed) if group.group_id == group_id else group for group in state.groups
+    ))
+
+
 def set_geometry(
     state: ReviewState, blow_id: str, distance_original_m: float | None, distance_calibration_m: float | None
 ) -> ReviewState:
@@ -239,6 +271,11 @@ class Revision:
 def _validate_transition(before: ReviewState, after: ReviewState) -> None:
     if before.receivers != after.receivers or before.timing_evidence != after.timing_evidence:
         raise ValueError("A review edit cannot rewrite source or timing evidence")
+    if len(after.groups) < len(before.groups):
+        raise ValueError("A review edit cannot remove imported groups")
+    for old_group, new_group in zip(before.groups, after.groups):
+        if old_group is not new_group and old_group != replace(new_group, reviewed=old_group.reviewed):
+            raise ValueError(f"A review edit cannot rewrite imported group metadata for {old_group.group_id!r}")
     after_by_id = {blow.blow_id: blow for blow in after.blows}
     for old in before.blows:
         new = after_by_id.get(old.blow_id)

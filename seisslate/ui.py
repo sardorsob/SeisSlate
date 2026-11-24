@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from math import nextafter
 from pathlib import Path
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from pyrocko import config, pile, snuffle
+from pyrocko import config, pile, snuffle, util
 from pyrocko.gui.qt_compat import qc, qg, qw
 from pyrocko.gui.snuffler.marker import Marker
 from pyrocko.gui.snuffler.snuffling import Snuffling
@@ -17,10 +17,11 @@ from pyrocko.trace import Trace
 
 from .analysis import Analysis, analyze
 from .example import load_example
+from .groups import GroupWindow, inspect_group, load_group_csv
 from .review import (
-    Blow, Pick, Receiver, ReviewHistory, ReviewState, Role, add_blow, mask_spans,
+    Blow, Pick, Receiver, ReviewHistory, ReviewState, Role, add_blow, add_groups, mask_spans,
     move_pick, nudge_pick, restore_spans, set_geometry, set_inclusion,
-    set_pair_status,
+    set_group_reviewed, set_pair_status,
 )
 from .sources import NS_PER_SECOND, Segment, SourceCatalog, load_source
 
@@ -29,12 +30,13 @@ ROLES: tuple[Role, Role] = ("original", "calibration")
 MINISEED_FILTER = "MiniSEED (*.mseed *.miniseed *.seed *.ms *.MSD);;All files (*)"
 SESSION_FILTER = "SeisSlate review (*.json)"
 NOT_AVAILABLE = "—"
+MIN_WAVEFORM_VIEW_S = 0.05
 
 
 def _utc(nanoseconds: int) -> str:
     seconds, remainder = divmod(nanoseconds, NS_PER_SECOND)
-    stamp = datetime.fromtimestamp(seconds, timezone.utc)
-    return f"{stamp:%Y-%m-%dT%H:%M:%S}.{remainder:09d}Z"
+    stamp = datetime(1970, 1, 1) + timedelta(seconds=seconds)
+    return f"{stamp.isoformat()}.{remainder:09d}Z"
 
 
 def _marker_ns(seconds) -> int:
@@ -77,6 +79,7 @@ class Workbench(qc.QObject):
         self.receivers: dict[Role, Receiver] = {}
         self.segments: tuple[Segment, ...] = ()
         self.selected_blow_id: str | None = None
+        self.selected_group_id: str | None = None
         self.session_path: Path | None = None
         self.saved_revision = None
         self.buttons: dict[str, qw.QPushButton] = {}
@@ -102,11 +105,31 @@ class Workbench(qc.QObject):
         self.save_action.setShortcut(qg.QKeySequence.Save)
 
         panel = qw.QWidget()
-        layout = qw.QVBoxLayout(panel)
+        panel_layout = qw.QVBoxLayout(panel)
         self.source_label = qw.QLabel("Open a recording pair, saved review, or synthetic example.")
         self.source_label.setTextFormat(qc.Qt.PlainText)
         self.source_label.setWordWrap(True)
-        layout.addWidget(self.source_label)
+        panel_layout.addWidget(self.source_label)
+
+        navigation = qw.QHBoxLayout()
+        self.unresolved_filter = qw.QComboBox()
+        self.unresolved_filter.setAccessibleName("Unresolved review filter")
+        self.unresolved_filter.addItem("Hammer groups", "groups")
+        self.unresolved_filter.addItem("Blows", "blows")
+        navigation.addWidget(self.unresolved_filter)
+        self.button(navigation, "previous_unresolved", "Previous unresolved", lambda: self.unresolved(-1))
+        self.button(navigation, "next_unresolved", "Next unresolved", lambda: self.unresolved(1))
+        panel_layout.addLayout(navigation)
+        for name, keys in (("previous_unresolved", "Ctrl+Up"), ("next_unresolved", "Ctrl+Down")):
+            self.buttons[name].setShortcut(qg.QKeySequence(keys))
+            self.buttons[name].setToolTip(keys)
+
+        self.review_tabs = qw.QTabWidget()
+        panel_layout.addWidget(self.review_tabs, 1)
+        paired = qw.QWidget()
+        layout = qw.QVBoxLayout(paired)
+        self.review_tabs.addTab(paired, "Paired review")
+        self.review_tabs.addTab(self.create_group_panel(), "Hammer groups")
 
         self.table = qw.QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(("Blow", "Fit status", "Lag (ms)", "Orig. UTC", "Cal. UTC",
@@ -164,13 +187,13 @@ class Workbench(qc.QObject):
         self.reason = qw.QLineEdit()
         self.reason.setPlaceholderText("Reason for edit (optional)")
         self.reason.setAccessibleName("Reason for edit")
-        layout.addWidget(self.reason)
+        panel_layout.addWidget(self.reason)
         row = qw.QHBoxLayout()
         self.button(row, "apply", "Apply", self.apply)
         self.button(row, "cancel", "Cancel preview", self.cancel)
         self.button(row, "undo", "Undo", lambda: self.navigate(self.history.undo))
         self.button(row, "redo", "Redo", lambda: self.navigate(self.history.redo))
-        layout.addLayout(row)
+        panel_layout.addLayout(row)
         self.buttons["undo"].setShortcut("Ctrl+Z")
         self.buttons["redo"].setShortcut("Ctrl+Shift+Z")
 
@@ -180,7 +203,7 @@ class Workbench(qc.QObject):
         self.status = qw.QLabel()
         self.status.setTextFormat(qc.Qt.PlainText)
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        panel_layout.addWidget(self.status)
         window.add_panel("Paired review", panel, visible=True, where=qc.Qt.RightDockWidgetArea)
 
         if initial is not None:
@@ -188,6 +211,39 @@ class Workbench(qc.QObject):
         else:
             self.draw_results()
             self.update_controls()
+
+    def create_group_panel(self):
+        panel = qw.QWidget()
+        layout = qw.QVBoxLayout(panel)
+        actions = qw.QHBoxLayout()
+        self.button(actions, "import_groups", "Import group CSV…", self.import_groups)
+        self.button(actions, "review_group", "Mark reviewed", self.review_group)
+        self.buttons["review_group"].setToolTip("Change the group's queue status")
+        self.button(actions, "add_group_blow", "Add blow to group…", self.add_group_blow)
+        layout.addLayout(actions)
+
+        self.group_table = qw.QTableWidget(0, 3)
+        self.group_table.setAccessibleName("Hammer group windows")
+        self.group_table.setHorizontalHeaderLabels(("Group ID", "Queue status", "Start / End (UTC)"))
+        self.group_table.setSelectionBehavior(qw.QAbstractItemView.SelectRows)
+        self.group_table.setSelectionMode(qw.QAbstractItemView.SingleSelection)
+        self.group_table.setEditTriggers(qw.QAbstractItemView.NoEditTriggers)
+        self.group_table.verticalHeader().hide()
+        self.group_table.verticalHeader().setSectionResizeMode(qw.QHeaderView.ResizeToContents)
+        header = self.group_table.horizontalHeader()
+        header.resizeSection(0, 112)
+        header.setSectionResizeMode(1, qw.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, qw.QHeaderView.Stretch)
+        self.group_table.itemSelectionChanged.connect(self.group_selected)
+        self.group_table.cellClicked.connect(self.zoom_to_group)
+        layout.addWidget(self.group_table, 1)
+
+        self.group_details = qw.QPlainTextEdit()
+        self.group_details.setAccessibleName("Selected hammer group evidence")
+        self.group_details.setReadOnly(True)
+        self.group_details.setPlaceholderText("Select a hammer group to inspect its evidence.")
+        layout.addWidget(self.group_details, 2)
+        return panel
 
     @property
     def catalog(self) -> SourceCatalog:
@@ -268,6 +324,7 @@ class Workbench(qc.QObject):
         self._active = catalog, history
         self.segments, self.receivers = segments, receivers
         self.selected_blow_id = history.current.state.blows[0].blow_id if history.current.state.blows else None
+        self.selected_group_id = None
         self.session_path = path
         self.saved_revision = self.history_stamp()
         self.source_label.setText(
@@ -483,6 +540,154 @@ class Workbench(qc.QObject):
                 self.table.selectRow(index)
         self.table.blockSignals(signals)
 
+    def group_state(self) -> ReviewState:
+        draft = self.history.draft
+        return draft.state if draft else self.state()
+
+    def fill_group_rows(self):
+        groups = sorted(self.group_state().groups, key=lambda group: (group.start_ns, group.group_id))
+        applied = {group.group_id: group for group in self.state().groups}
+        signals = self.group_table.blockSignals(True)
+        self.group_table.clearContents()
+        self.group_table.setRowCount(len(groups))
+        selected = None
+        for row, group in enumerate(groups):
+            status = "Reviewed" if group.reviewed else "Unresolved"
+            if group != applied.get(group.group_id):
+                status = f"Preview\n{status}"
+            window = f"{_utc(group.start_ns)}\n{_utc(group.stop_ns)}"
+            for column, label in enumerate((group.group_id, status, window)):
+                self.group_table.setItem(row, column, qw.QTableWidgetItem(label))
+            if group.group_id == self.selected_group_id:
+                selected = row
+        if selected is None:
+            self.selected_group_id = None
+        else:
+            self.group_table.setCurrentCell(selected, 0)
+        self.group_table.blockSignals(signals)
+        self.describe_group()
+
+    def selected_group(self) -> GroupWindow | None:
+        return next((group for group in self.group_state().groups if group.group_id == self.selected_group_id), None)
+
+    def describe_group(self):
+        group = self.selected_group()
+        can_edit = group is not None and self.history.draft is None
+        self.buttons["review_group"].setEnabled(can_edit)
+        self.buttons["add_group_blow"].setEnabled(can_edit)
+        self.buttons["review_group"].setText("Reopen group" if group and group.reviewed else "Mark reviewed")
+        if group is None:
+            self.group_details.clear()
+            return
+        state = self.group_state()
+        report = inspect_group(self.catalog, state, group)
+        source_stop = group.end_utc if group.end_utc is not None else f"{group.duration_s} s"
+        lines = [
+            f"{group.group_id} · Source position {group.source_position_id or 'Missing'}",
+            f"CSV time  {group.start_utc} → {source_stop} · {group.time_basis}",
+        ]
+        for role in ROLES:
+            receiver = getattr(report, role)
+            lines.append(
+                f"{role.capitalize()} · Header {receiver.channel_id or 'Missing'} · "
+                f"Declared {receiver.declared_channel or 'Missing'} · {receiver.channel_status.capitalize()}"
+            )
+            lines.append(f"  Recording coverage  {receiver.coverage.capitalize()}")
+            if receiver.sha256:
+                lines.append(f"  SHA-256  {receiver.sha256}")
+        timing_note = f" · {group.timing_note}" if group.timing_note else ""
+        lines.append(f"Timing evidence  {report.timing_status.capitalize()}{timing_note}")
+        if state.timing_evidence:
+            lines.append(f"  Session clock note  {state.timing_evidence}")
+        geometry_note = f" · {group.geometry_note}" if group.geometry_note else ""
+        lines.extend((
+            f"Geometry evidence  {report.geometry_status.capitalize()}{geometry_note}",
+            f"CSV  {group.source_file} · row {group.source_row}",
+            f"SHA-256  {group.source_sha256}",
+        ))
+        self.group_details.setPlainText("\n".join(lines))
+
+    def group_selected(self):
+        rows = self.group_table.selectionModel().selectedRows()
+        self.selected_group_id = self.group_table.item(rows[0].row(), 0).text() if rows else None
+        self.describe_group()
+        self.zoom_to_group()
+
+    def zoom_to_group(self, *_):
+        group = self.selected_group()
+        if group is not None:
+            self.show_group_window(group)
+
+    def show_group_window(self, group: GroupWindow):
+        start, stop = group.start_ns / NS_PER_SECOND, group.stop_ns / NS_PER_SECOND
+        lower, upper, _, _ = util.get_working_system_time_range()
+        if not (lower <= start < upper and lower < stop <= upper):
+            self.status.setText(f"{group.group_id} is outside the waveform viewer's UTC range.")
+            return
+        minimum_span = max(MIN_WAVEFORM_VIEW_S, self.viewer.content_deltat_range()[0])
+        padded = stop - start < minimum_span
+        if padded:
+            # Snuffler's sub-millisecond ticks require high-precision floats on some platforms.
+            start = min(max((start + stop - minimum_span) / 2, lower), upper - minimum_span)
+            stop = start + minimum_span
+        self.viewer.set_time_range(start, stop)
+        self.viewer.update()
+        self.update_controls()
+        if padded:
+            self.status.setText(f"{self.status.text()} · Waveform padded for display.")
+
+    def import_groups(self):
+        name, _ = qw.QFileDialog.getOpenFileName(self.window, "Import hammer group windows", "", "CSV (*.csv)")
+        if not name:
+            return
+        groups = load_group_csv(Path(name))
+        state = add_groups(self.state(), groups)
+        self.selected_group_id = min(groups, key=lambda group: (group.start_ns, group.group_id)).group_id
+        count = len(groups)
+        self.preview(state, f"Import {count} hammer {'group' if count == 1 else 'groups'}")
+        self.zoom_to_group()
+
+    def review_group(self):
+        group = self.selected_group()
+        if group is None:
+            return
+        state = set_group_reviewed(self.state(), group.group_id, not group.reviewed)
+        reason = f"Reopen {group.group_id}" if group.reviewed else f"Mark {group.group_id} reviewed"
+        self.preview(state, reason)
+
+    def add_group_blow(self):
+        group = self.selected_group()
+        if group is not None:
+            self.new_blow(group_id=group.group_id)
+
+    def unresolved(self, step):
+        groups_mode = self.unresolved_filter.currentData() == "groups"
+        self.review_tabs.setCurrentIndex(1 if groups_mode else 0)
+        if groups_mode:
+            ordered = [self.group_table.item(row, 0).text() for row in range(self.group_table.rowCount())]
+            unresolved = {group.group_id for group in self.group_state().groups if not group.reviewed}
+            selected = self.selected_group_id
+            kind = "hammer groups"
+        else:
+            observations = self.result.reviewed.observations
+            ordered = [row.blow_id for row in observations]
+            unresolved = {row.blow_id for row in observations if row.status not in ("valid", "excluded")}
+            selected = self.selected_blow_id
+            kind = "blows"
+        if not unresolved:
+            self.status.setText(f"No unresolved {kind}.")
+            return
+        order = ordered if step > 0 else ordered[::-1]
+        start = order.index(selected) + 1 if selected in order else 0
+        target = next(item for item in order[start:] + order[:start] if item in unresolved)
+        if groups_mode:
+            self.group_table.setCurrentCell(ordered.index(target), 0)
+            self.zoom_to_group()
+        else:
+            self.select_blow(target)
+        if target == selected:
+            self.status.setText(f"{self.status.text()} · {target} is the only unresolved entry.")
+
     def update_controls(self):
         if self._active is None:
             for button in self.buttons.values():
@@ -497,6 +702,9 @@ class Workbench(qc.QObject):
             self.buttons[key].setEnabled(selected and not pending)
         for key in ("mask", "restore", "add"):
             self.buttons[key].setEnabled(not pending)
+        for key in ("previous_unresolved", "next_unresolved"):
+            self.buttons[key].setEnabled(True)
+        self.buttons["import_groups"].setEnabled(not pending)
         self.buttons["overview"].setEnabled(True)
         self.buttons["apply"].setEnabled(pending)
         self.buttons["cancel"].setEnabled(pending)
@@ -505,7 +713,7 @@ class Workbench(qc.QObject):
         self.save_action.setEnabled(not pending)
         self.export_action.setEnabled(not pending)
         if draft is not None:
-            self.status.setText(f"Preview • {draft.reason}. Table and fit show the applied revision.")
+            self.status.setText(f"Preview • {draft.reason}. Blow table and fit show the applied revision.")
         else:
             saved = " · unsaved changes" if self.history_stamp() != self.saved_revision else ""
             self.status.setText(f"Applied revision {self.history.current.revision_id}{saved}")
@@ -522,6 +730,7 @@ class Workbench(qc.QObject):
         self.fit_label.setText(fit_text)
         self.fit_label.setToolTip(self.result.field_interpretation + " " + fit.diagnostic)
         self.fill_rows()
+        self.fill_group_rows()
         self.draw_results()
         self.render_markers()
         self.describe_selection()
@@ -539,6 +748,12 @@ class Workbench(qc.QObject):
             pick = getattr(blow, role)
             ref = pick.reviewed_ref
             descriptions.append(f"{role.capitalize()} sample {ref.sample_index}" if ref else f"{role.capitalize()} unresolved")
+        if blow.group_id is not None:
+            group = next(group for group in self.state().groups if group.group_id == blow.group_id)
+            descriptions.append(f"Group {group.group_id}")
+            if any((time := self.pick_time(getattr(blow, role))) is not None
+                   and not (group.start_ns <= time < group.stop_ns) for role in ROLES):
+                descriptions.append("An arrival is outside the group window.")
         self.details.setText("  ·  ".join((blow.blow_id, *descriptions, row.reason)).rstrip(" ·"))
 
     def select_blow(self, blow_id, *, zoom=True):
@@ -560,9 +775,14 @@ class Workbench(qc.QObject):
         times = [self.pick_time(getattr(blow, role)) for role in ROLES]
         positions = [ns / NS_PER_SECOND for ns in times if ns is not None]
         if positions:
-            pad = max(0.025, 4 / min(segment.sampling_rate_hz for segment in self.segments))
+            pad = max(MIN_WAVEFORM_VIEW_S / 2, 4 / min(segment.sampling_rate_hz for segment in self.segments))
             self.viewer.set_time_range(min(positions) - pad, max(positions) + pad)
             self.viewer.update()
+        elif blow.group_id is not None:
+            group = next(group for group in self.state().groups if group.group_id == blow.group_id)
+            self.show_group_window(group)
+        else:
+            self.status.setText(f"{blow.blow_id} has no arrival UTC for waveform navigation.")
 
     def table_selected(self):
         items = self.table.selectedItems()
@@ -601,6 +821,10 @@ class Workbench(qc.QObject):
     def preview(self, state, reason):
         self.history.preview(state, self.reason.text().strip() or reason)
         self.render_markers()
+        if state.groups != self.state().groups:
+            self.fill_group_rows()
+        else:
+            self.describe_group()
         self.update_controls()
 
     def apply(self):
@@ -682,11 +906,12 @@ class Workbench(qc.QObject):
         self.preview(set_inclusion(self.state(), blow.blow_id, included, reason),
                      f"{blow.blow_id} {reason.lower()}")
 
-    def new_blow(self):
-        label, accepted = qw.QInputDialog.getText(self.window, "Add blow", "Blow ID")
+    def new_blow(self, *, group_id=None):
+        title = "Add blow" if group_id is None else f"Add blow to group {group_id}"
+        label, accepted = qw.QInputDialog.getText(self.window, title, "Blow ID")
         if accepted and label.strip():
             blow = Blow(label.strip(), Pick(None), Pick(None), None, None,
-                        included=False, pair_status="unmatched")
+                        included=False, pair_status="unmatched", group_id=group_id)
             self.preview(add_blow(self.state(), blow), f"Added {blow.blow_id}")
 
     def change_geometry(self):
