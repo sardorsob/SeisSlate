@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "seisslate"
 version = "0.1.0.dev0"
-description = "A local workbench for paired seismic waveform review"
+description = "A local workbench for seismic pick and waveform interval review"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["numpy>=1.26,<3", "obspy==1.5.2"]

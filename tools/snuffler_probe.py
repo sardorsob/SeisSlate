@@ -2,6 +2,7 @@
 
 Run with --check to drive the real marker table and nudge button through Qt.
 Run without --check to repeat the interaction in the visible window.
+Run with --raw-view-check to audit the display inputs and review-session reopen.
 """
 
 import argparse
@@ -46,10 +47,166 @@ def sample_for_marker(source_pile, marker):
     return matches[0]
 
 
+def check_raw_view():
+    """Compare stock wiggle draw inputs with immutable samples on the pinned viewer."""
+    from importlib.metadata import version
+    from tempfile import TemporaryDirectory
+    from unittest.mock import patch
+
+    import numpy as np
+    from pyrocko import info
+    from pyrocko.gui.qt_compat import qc, qw
+    from pyrocko.gui.snuffler import pile_viewer, pile_viewer_waterfall, snuffling
+    from PyQt5.QtTest import QTest
+
+    from seisslate.example import load_example
+    from seisslate.ui import launch_workbench
+
+    assert version("pyrocko") == "2026.11.5", "Use the pinned SeisSlate Pyrocko to reproduce this audit"
+    print(json.dumps({
+        "platform": platform.platform(), "python": platform.python_version(),
+        "pyrocko": info.version, "pyrocko_commit": info.git_sha1,
+        "qt": qc.qVersion(), "pyqt": qc.PYQT_VERSION_STR,
+        "upstream_sources": {
+            module.__name__: {
+                "path": module.__file__, "sha256": sha256(Path(module.__file__).read_bytes()).hexdigest(),
+            }
+            for module in (pile_viewer, pile_viewer_waterfall, snuffling)
+        },
+    }), flush=True)
+
+    class ReversePolarity(snuffling.Snuffling):
+        def setup(self):
+            self.set_name("Probe polarity reversal")
+            self.set_have_post_process_hook(True)
+
+        def post_process_hook(self, traces):
+            for trace in traces:
+                trace.set_ydata(-trace.get_ydata())
+            return traces
+
+    def exercise(workbench):
+        viewer = workbench.viewer
+        container = viewer.parent()
+        segment = workbench.segments[0]
+        nslc = tuple(segment.channel.split("."))
+        source_bytes = segment.data.tobytes()
+        qw.QApplication.processEvents()
+        workbench.select_blow("B01")
+
+        def draw_inputs(label):
+            observed = []
+            prepare = viewer.prepare_cutout2
+
+            def observe(*args, **kwargs):
+                traces = prepare(*args, **kwargs)
+                observed.extend(trace.copy() for trace in traces if trace.nslc_id == nslc)
+                return traces
+
+            with patch.object(viewer, "prepare_cutout2", side_effect=observe):
+                assert not viewer.grab().isNull(), "Qt did not render the stock viewer"
+            expected_start = segment.start_ns / 1e9
+            expected_stop = segment.stop_ns / 1e9
+            trace = next((trace for trace in observed if expected_start <= trace.tmin < expected_stop), None)
+            assert trace is not None, f"No wiggle draw input in {segment.segment_id}"
+            first = round((trace.tmin - segment.start_ns / 1e9) / trace.deltat)
+            data = trace.get_ydata()
+            assert trace.deltat == 1 / segment.sampling_rate_hz and first >= 0
+            raw = segment.data[first:first + data.size]
+            assert raw.shape == data.shape, (first, data.size, segment.npts, viewer.get_time_range())
+            matches = data.dtype == raw.dtype and data.tobytes() == raw.tobytes()
+            print(json.dumps({
+                "state": label, "sample_span": [first, first + data.size],
+                "raw_match": matches, "max_abs_difference": float(np.max(np.abs(data.astype(float) - raw))),
+                "display_dtype": str(data.dtype), "source_dtype": str(raw.dtype),
+                "time_range_s": list(viewer.get_time_range()),
+                "lowpass_hz": viewer.lowpass, "highpass_hz": viewer.highpass,
+                "fft_filtering": viewer.menuitem_fft_filtering.isChecked(),
+                "demean": viewer.menuitem_demean.isChecked(),
+                "degap": viewer.menuitem_degap.isChecked(),
+                "gain": viewer.gain, "rotation_deg": viewer.rotate,
+            }), flush=True)
+            return data, raw, matches
+
+        assert draw_inputs("startup_wiggle")[2]
+        viewer.menuitem_demean.trigger()
+        data, raw, matches = draw_inputs("demean_enabled")
+        assert not matches
+        np.testing.assert_allclose(data.mean(), 0.0, atol=1e-10)
+        viewer.menuitem_demean.trigger()
+        assert draw_inputs("demean_reset")[2]
+
+        before_gain = viewer.grab().toImage()
+        container.gain_control.edited(2.0)
+        assert viewer.gain == 2.0 and draw_inputs("gain_projection_only")[2]
+        assert viewer.grab().toImage() != before_gain
+        container.gain_control.edited(1.0)
+
+        lowpass, highpass = container.lowpass_control, container.highpass_control
+        highpass.edited(8.0)
+        assert viewer.highpass == 8.0 and not draw_inputs("highpass_enabled")[2]
+        viewer.menuitem_fft_filtering.trigger()
+        lowpass.edited(30.0)
+        assert not draw_inputs("fft_highpass_and_lowpass")[2]
+        highpass.edited(highpass.mi)
+        lowpass.edited(lowpass.ma)
+        viewer.menuitem_fft_filtering.trigger()
+        assert viewer.highpass is None and viewer.lowpass is None and draw_inputs("filters_reset")[2]
+
+        hook = ReversePolarity()
+        hook.setup()
+        viewer.add_snuffling(hook)
+        hook.set_live_update(True)
+        data, raw, matches = draw_inputs("local_post_hook_with_filter_controls_off")
+        assert viewer.lowpass is None and viewer.highpass is None and not matches
+        np.testing.assert_array_equal(data, -raw)
+        hook.set_live_update(False)
+        assert draw_inputs("post_hook_reset")[2]
+
+        revision_id = workbench.history.current.revision_id
+        def click(name):
+            button = workbench.buttons[name]
+            assert button.isEnabled(), name
+            QTest.mouseClick(button, qc.Qt.LeftButton)
+
+        click("later")
+        assert workbench.history.draft is not None
+        lowpass.edited(30.0)
+        assert viewer.lowpass == 30.0 and not draw_inputs("lowpass_immediately_before_apply")[2]
+        click("apply")
+        applied = workbench.history.current
+        assert applied.revision_id != revision_id and workbench.history.draft is None
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "probe-review.json"
+            with patch.object(qw.QFileDialog, "getSaveFileName", return_value=(str(path), "")):
+                workbench.save_action.trigger()
+            assert b"raw-v1" not in path.read_bytes()
+            previous_history = workbench.history
+            with patch.object(qw.QFileDialog, "getOpenFileName", return_value=(str(path), "")):
+                workbench.open_session_action.trigger()
+            assert workbench.history is not previous_history, "Qt did not reopen the saved review"
+            assert workbench.session_path == path
+            assert workbench.history.current == applied
+        workbench.select_blow("B01")
+        assert viewer.lowpass == 30.0 and not draw_inputs("same_window_reopen_keeps_lowpass")[2]
+        lowpass.edited(lowpass.ma)
+        assert viewer.lowpass is None and draw_inputs("lowpass_reset_after_reopen")[2]
+        assert segment.data.tobytes() == source_bytes
+        print(json.dumps({"applied_revision": applied.revision_id, "saved_raw_v1": False}), flush=True)
+
+    launch_workbench(load_example(), check=exercise)
+    print("PASS: stock display can differ from raw; legacy Apply records no view evidence.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="Run the Qt exercise and exit.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="Run the Qt exercise and exit.")
+    mode.add_argument("--raw-view-check", action="store_true", help="Run the raw-view audit and exit.")
     args = parser.parse_args()
+    if args.raw_view_check:
+        check_raw_view()
+        return
 
     import pyrocko
     from pyrocko import config, pile

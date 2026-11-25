@@ -1,0 +1,261 @@
+{
+  "version": 1,
+  "sources": {
+    "integer": {
+      "path": "integer.mseed",
+      "sha256": "7cb889a2b56175f40a9eee30daf28c40bc248bd83e09aa3d7263da58193020b3",
+      "size_bytes": 512,
+      "segments": [
+        {
+          "channel": "XX.INT..EHZ",
+          "start_ns": 946684800000000000,
+          "sampling_rate_hz": "3",
+          "dtype": "int32",
+          "npts": 15,
+          "sample_sha256": "7ec117cf3ebc56b7b4dc958ba64f166e50ca4a9c3859c74f41925e0dec36b14d"
+        }
+      ]
+    },
+    "floating": {
+      "path": "floating.mseed",
+      "sha256": "060d6ec87c0f2f8f090c5ca885098dfd895e0b162087524beba1d950308a411e",
+      "size_bytes": 512,
+      "segments": [
+        {
+          "channel": "XX.FLOAT..EHZ",
+          "start_ns": 946684800000000000,
+          "sampling_rate_hz": "1000",
+          "dtype": "float64",
+          "npts": 12,
+          "sample_sha256": "830ac42fa0e0fa86ee0c563bea27f685e9b12998063b8ba3b899587551de6348"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "rational-three-hz",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["946684800000000000", "2840054402000000000/3"],
+      "background_ns": ["2840054402000000000/3", "2840054404000000000/3"],
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [0, 2], "event_mean": 4, "event_rms": 2, "event_reasons": [],
+        "background_segment": 0, "background_indices": [2, 4], "background_mean": 8, "background_rms": 1, "background_reasons": [],
+        "contrast": 2, "samples_per_window": 2, "duration_ns": "2000000000/3",
+        "available": true, "reasons": [],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "zero-event",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["2840054404000000000/3", "946684802000000000"],
+      "background_ns": ["946684802000000000", "2840054408000000000/3"],
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [4, 6], "event_mean": 4, "event_rms": 0, "event_reasons": [],
+        "background_segment": 0, "background_indices": [6, 8], "background_mean": 8, "background_rms": 1, "background_reasons": [],
+        "contrast": 0, "samples_per_window": 2, "duration_ns": "2000000000/3",
+        "available": true, "reasons": [],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "zero-background",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["946684802000000000", "2840054408000000000/3"],
+      "background_ns": ["2840054404000000000/3", "946684802000000000"],
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [6, 8], "event_mean": 8, "event_rms": 1, "event_reasons": [],
+        "background_segment": 0, "background_indices": [4, 6], "background_mean": 4, "background_rms": 0, "background_reasons": [],
+        "contrast": null, "samples_per_window": 2, "duration_ns": "2000000000/3",
+        "available": false, "reasons": ["zero_background"],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "masked",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["946684800000000000", "2840054402000000000/3"],
+      "background_ns": ["2840054402000000000/3", "2840054404000000000/3"],
+      "masks": [[0, 1, 2]],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [0, 2], "event_mean": null, "event_rms": null, "event_reasons": ["masked_samples"],
+        "background_segment": 0, "background_indices": [2, 4], "background_mean": 8, "background_rms": 1, "background_reasons": [],
+        "contrast": null, "samples_per_window": 2, "duration_ns": "2000000000/3",
+        "available": false, "reasons": ["masked_samples"],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "fractional-endpoints",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["2840054400500000000/3", "2840054402500000000/3"],
+      "background_ns": ["946684802000000000", "2840054408000000000/3"],
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [1, 3], "event_mean": 6.5, "event_rms": 0.5, "event_reasons": [],
+        "background_segment": 0, "background_indices": [6, 8], "background_mean": 8, "background_rms": 1, "background_reasons": [],
+        "contrast": 0.5, "samples_per_window": 2, "duration_ns": "2000000000/3",
+        "available": true, "reasons": [],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "clipped-request",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["946684799999999999", "2840054402000000000/3"],
+      "background_ns": ["2840054402000000000/3", "2840054404000000000/3"],
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": null, "event_indices": null, "event_mean": null, "event_rms": null, "event_reasons": ["out_of_bounds"],
+        "background_segment": 0, "background_indices": [2, 4], "background_mean": 8, "background_rms": 1, "background_reasons": [],
+        "contrast": null, "samples_per_window": null, "duration_ns": null,
+        "available": false, "reasons": ["out_of_bounds"],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "unequal-request",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["946684800000000000", "2840054402000000000/3"],
+      "background_ns": ["946684804000000000", "946684805000000000"],
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [0, 2], "event_mean": 4, "event_rms": 2, "event_reasons": [],
+        "background_segment": 0, "background_indices": [12, 15], "background_mean": 12, "background_rms": 1.632993161855452, "background_reasons": [],
+        "contrast": null, "samples_per_window": null, "duration_ns": null,
+        "available": false, "reasons": ["unequal_length"],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "one-sample",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["946684800000000000", "2840054401000000000/3"],
+      "background_ns": ["2840054402000000000/3", "946684801000000000"],
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [0, 1], "event_mean": null, "event_rms": null, "event_reasons": ["too_short"],
+        "background_segment": 0, "background_indices": [2, 3], "background_mean": null, "background_rms": null, "background_reasons": ["too_short"],
+        "contrast": null, "samples_per_window": 1, "duration_ns": "1000000000/3",
+        "available": false, "reasons": ["too_short"],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "missing-background",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["946684800000000000", "2840054402000000000/3"],
+      "background_ns": null,
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [0, 2], "event_mean": 4, "event_rms": 2, "event_reasons": [],
+        "background_segment": null, "background_indices": null, "background_mean": null, "background_rms": null, "background_reasons": ["missing_window"],
+        "contrast": null, "samples_per_window": null, "duration_ns": null,
+        "available": false, "reasons": ["missing_window"],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "overlapping-request",
+      "source": "integer",
+      "channel": "XX.INT..EHZ",
+      "event_ns": ["946684800000000000", "2840054402000000000/3"],
+      "background_ns": ["2840054401000000000/3", "946684801000000000"],
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [0, 2], "event_mean": 4, "event_rms": 2, "event_reasons": [],
+        "background_segment": 0, "background_indices": [1, 3], "background_mean": 6.5, "background_rms": 0.5, "background_reasons": [],
+        "contrast": null, "samples_per_window": 2, "duration_ns": "2000000000/3",
+        "available": false, "reasons": ["overlapping_windows"],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "tiny-contrast",
+      "source": "floating",
+      "channel": "XX.FLOAT..EHZ",
+      "event_ns": ["946684800000000000", "946684800002000000"],
+      "background_ns": ["946684800002000000", "946684800004000000"],
+      "masks": [],
+      "relative_only": true,
+      "expected": {
+        "event_segment": 0, "event_indices": [0, 2], "event_mean": 0, "event_rms": 1e-300, "event_reasons": [],
+        "background_segment": 0, "background_indices": [2, 4], "background_mean": 0, "background_rms": 1, "background_reasons": [],
+        "contrast": 1e-300, "samples_per_window": 2, "duration_ns": "2000000",
+        "available": true, "reasons": [],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "extreme-values",
+      "source": "floating",
+      "channel": "XX.FLOAT..EHZ",
+      "event_ns": ["946684800004000000", "946684800006000000"],
+      "background_ns": ["946684800006000000", "946684800008000000"],
+      "masks": [],
+      "relative_only": true,
+      "expected": {
+        "event_segment": 0, "event_indices": [4, 6], "event_mean": 0, "event_rms": 1e+308, "event_reasons": [],
+        "background_segment": 0, "background_indices": [6, 8], "background_mean": 0, "background_rms": 5e+307, "background_reasons": [],
+        "contrast": 2, "samples_per_window": 2, "duration_ns": "2000000",
+        "available": true, "reasons": [],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "contrast-overflow",
+      "source": "floating",
+      "channel": "XX.FLOAT..EHZ",
+      "event_ns": ["946684800004000000", "946684800006000000"],
+      "background_ns": ["946684800000000000", "946684800002000000"],
+      "masks": [],
+      "relative_only": true,
+      "expected": {
+        "event_segment": 0, "event_indices": [4, 6], "event_mean": 0, "event_rms": 1e+308, "event_reasons": [],
+        "background_segment": 0, "background_indices": [0, 2], "background_mean": 0, "background_rms": 1e-300, "background_reasons": [],
+        "contrast": null, "samples_per_window": 2, "duration_ns": "2000000",
+        "available": false, "reasons": ["numeric_failure"],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    },
+    {
+      "id": "nonfinite",
+      "source": "floating",
+      "channel": "XX.FLOAT..EHZ",
+      "event_ns": ["946684800008000000", "946684800010000000"],
+      "background_ns": ["946684800010000000", "946684800012000000"],
+      "masks": [],
+      "relative_only": false,
+      "expected": {
+        "event_segment": 0, "event_indices": [8, 10], "event_mean": 0, "event_rms": 2, "event_reasons": [],
+        "background_segment": 0, "background_indices": [10, 12], "background_mean": null, "background_rms": null, "background_reasons": ["nonfinite_samples"],
+        "contrast": null, "samples_per_window": 2, "duration_ns": "2000000",
+        "available": false, "reasons": ["nonfinite_samples"],
+        "units": "raw units unknown", "epoch_status": "unknown"
+      }
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+# The historical exporter writes CRLF, and the golden comparison uses raw bytes.
+*.fit.csv -text whitespace=cr-at-eol
+*.json text eol=lf

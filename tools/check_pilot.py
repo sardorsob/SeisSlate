@@ -76,7 +76,7 @@ def windows_architectures():
     return interpreter, host
 
 
-def report_environment():
+def host_architectures():
     interpreter = host = platform.machine()
     if sys.platform == "win32":
         interpreter, host = windows_architectures()
@@ -91,6 +91,11 @@ def report_environment():
         except (OSError, subprocess.SubprocessError):
             pass
 
+    return interpreter, host
+
+
+def report_environment():
+    interpreter, host = host_architectures()
     print(f"SeisSlate synthetic pilot check, {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
     print(f"OS {platform.platform()}, OS architecture {host}")
     print(f"Python {platform.python_version()}, interpreter architecture {interpreter}")

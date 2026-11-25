@@ -155,12 +155,20 @@ class GroupWorkbenchTest(TestCase):
                 self.assertIsNone(blow.calibration.reviewed_ref)
                 self.assertFalse(blow.included)
 
+                group_state = history.current.state.groups
+                group_selection = workbench.selected_group_id
                 workbench.unresolved_filter.setCurrentIndex(workbench.unresolved_filter.findData("blows"))
+                workbench.select_blow("B06", role="calibration")
                 click("next_unresolved")
-                self.assertEqual(workbench.selected_blow_id, "B07")
+                self.assertEqual((workbench.selected_blow_id, workbench.role.currentData()), ("B07", "original"))
                 click("next_unresolved")
-                self.assertEqual(workbench.selected_blow_id, "M01")
+                self.assertEqual((workbench.selected_blow_id, workbench.role.currentData()), ("B07", "calibration"))
+                workbench.select_blow("B08", role="calibration")
+                click("next_unresolved")
+                self.assertEqual((workbench.selected_blow_id, workbench.role.currentData()), ("M01", "original"))
                 self.assertEqual(workbench.review_tabs.currentIndex(), 0)
+                self.assertEqual(history.current.state.groups, group_state)
+                self.assertEqual(workbench.selected_group_id, group_selection)
                 self.assertEqual(workbench.viewer.get_time_range(), (946684802.1, 946684802.25))
                 self.assertIn("gap", workbench.details.text())
                 with patch.object(QInputDialog, "getText", return_value=("M02", True)):

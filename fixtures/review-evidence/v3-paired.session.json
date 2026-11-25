@@ -1,0 +1,297 @@
+{
+  "schema_version": 3,
+  "mode": "paired",
+  "method_version": "hammer-differential-ols-v1",
+  "sources": [
+    {
+      "path": "../synthetic/original.mseed",
+      "sha256": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+      "size_bytes": 13824
+    },
+    {
+      "path": "../synthetic/calibration.mseed",
+      "sha256": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+      "size_bytes": 13824
+    }
+  ],
+  "revisions": [
+    {
+      "revision_id": 0,
+      "state": {
+        "blows": [
+          {
+            "blow_id": "B01",
+            "original": {
+              "imported_ns": 946684800360000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 360
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 360
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800400000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 400
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 400
+              }
+            },
+            "distance_original_m": 13.1,
+            "distance_calibration_m": 31.1,
+            "included": true,
+            "reason": "",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": null
+          }
+        ],
+        "masks": [],
+        "receivers": [
+          {
+            "role": "original",
+            "channel": "XX.ORIG..EHZ",
+            "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08"
+          },
+          {
+            "role": "calibration",
+            "channel": "XX.CALB..EHZ",
+            "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7"
+          }
+        ],
+        "timing_evidence": "Synthetic recordings share a known integer-millisecond clock.",
+        "groups": [],
+        "pick_decisions": [],
+        "interval_actions": [],
+        "raw_evidence": [],
+        "rms": null
+      },
+      "reason": "Initial review"
+    },
+    {
+      "revision_id": 1,
+      "state": {
+        "blows": [
+          {
+            "blow_id": "B01",
+            "original": {
+              "imported_ns": 946684800360000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 360
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 360
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800400000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 400
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 400
+              }
+            },
+            "distance_original_m": 13.1,
+            "distance_calibration_m": 31.1,
+            "included": true,
+            "reason": "",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": null
+          }
+        ],
+        "masks": [
+          {
+            "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+            "start": 350,
+            "stop": 351
+          }
+        ],
+        "receivers": [
+          {
+            "role": "original",
+            "channel": "XX.ORIG..EHZ",
+            "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08"
+          },
+          {
+            "role": "calibration",
+            "channel": "XX.CALB..EHZ",
+            "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7"
+          }
+        ],
+        "timing_evidence": "Synthetic recordings share a known integer-millisecond clock.",
+        "groups": [],
+        "pick_decisions": [
+          {
+            "blow_id": "B01",
+            "role": "original",
+            "reviewed_ref": {
+              "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+              "channel": "XX.ORIG..EHZ",
+              "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+              "sample_index": 360
+            },
+            "status": "accepted",
+            "lower_ref": {
+              "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+              "channel": "XX.ORIG..EHZ",
+              "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+              "sample_index": 359
+            },
+            "upper_ref": {
+              "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+              "channel": "XX.ORIG..EHZ",
+              "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+              "sample_index": 361
+            },
+            "reason": "Clear onset in the synthetic recording",
+            "reviewer": "Synthetic reviewer",
+            "intended_utc_ns": null,
+            "inspection_span": {
+              "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+              "start": 355,
+              "stop": 366
+            },
+            "evidence_id": "raw-1"
+          }
+        ],
+        "interval_actions": [
+          {
+            "action": "mask",
+            "spans": [
+              {
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "start": 350,
+                "stop": 351
+              }
+            ],
+            "reason": "Separate synthetic transient"
+          }
+        ],
+        "raw_evidence": [
+          {
+            "evidence_id": "raw-1",
+            "applied_revision_id": 1,
+            "confirmation": {
+              "decision": {
+                "blow_id": "B01",
+                "role": "original",
+                "reviewed_ref": {
+                  "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                  "channel": "XX.ORIG..EHZ",
+                  "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                  "sample_index": 360
+                },
+                "status": "accepted",
+                "lower_ref": {
+                  "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                  "channel": "XX.ORIG..EHZ",
+                  "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                  "sample_index": 359
+                },
+                "upper_ref": {
+                  "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                  "channel": "XX.ORIG..EHZ",
+                  "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                  "sample_index": 361
+                },
+                "reason": "Clear onset in the synthetic recording",
+                "reviewer": "Synthetic reviewer",
+                "intended_utc_ns": null,
+                "inspection_span": {
+                  "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                  "start": 355,
+                  "stop": 366
+                },
+                "evidence_id": null
+              },
+              "view": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "span": {
+                  "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                  "start": 355,
+                  "stop": 366
+                },
+                "display_start_ns": 946684800355000000,
+                "display_stop_ns": 946684800366000000,
+                "point": {
+                  "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                  "channel": "XX.ORIG..EHZ",
+                  "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                  "sample_index": 360
+                },
+                "bounds": [
+                  {
+                    "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                    "channel": "XX.ORIG..EHZ",
+                    "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                    "sample_index": 359
+                  },
+                  {
+                    "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                    "channel": "XX.ORIG..EHZ",
+                    "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                    "sample_index": 361
+                  }
+                ],
+                "ordinate_scale": "linear-autoscale"
+              },
+              "samples": {
+                "segment_start_ns": 946684800000000000,
+                "period_numerator": 1000000,
+                "period_denominator": 1,
+                "dtype": "<i4",
+                "sample_count": 11,
+                "digest": "f49fea87b405bd2edfa1617f0a3a94e1ff60fe15294675384792e15ff9c8752d"
+              }
+            },
+            "captured_utc_ns": 1795000000000000000,
+            "software_versions": [
+              [
+                "SeisSlate",
+                "0.1.0.dev0"
+              ],
+              [
+                "NumPy",
+                "2.5.5"
+              ]
+            ],
+            "method_id": "raw-v1"
+          }
+        ],
+        "rms": null
+      },
+      "reason": "Review the synthetic waveform"
+    }
+  ],
+  "cursor": 1,
+  "next_revision_id": 2
+}

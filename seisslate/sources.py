@@ -108,6 +108,11 @@ class Segment:
         return np.frombuffer(self._data, dtype=self._dtype)
 
     @property
+    def period_ns(self) -> Fraction:
+        """Exact nanoseconds per sample on the recorded grid."""
+        return self._period_ns
+
+    @property
     def end_ns(self) -> int:
         """UTC time of this segment's last sample."""
         return self.time_ns(self.npts - 1)
