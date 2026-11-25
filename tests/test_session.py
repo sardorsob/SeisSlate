@@ -670,5 +670,235 @@ export_csv(out / 'redo.fit.csv', catalog, history)
                             load_session(path, relink=relink)
 
 
+class SingleChannelSessionTest(unittest.TestCase):
+    def setUp(self):
+        from seisslate import session
+        from seisslate.review import ReviewHistory, ReviewState
+        from seisslate.sources import SourceCatalog, load_source
+
+        self.api = session
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.folder = Path(directory.name)
+        self.recording = self.folder / "single.mseed"
+        source = FIXTURE / "original.mseed"
+        shutil.copyfile(source, self.recording)
+        self.catalog = SourceCatalog((load_source(self.recording),))
+        self.segment = self.catalog.segments[0]
+        self.identity = self.segment.source_hash, self.segment.channel
+        self.history = ReviewHistory(ReviewState.for_single_channel(*self.identity))
+        self.path = self.folder / "single.json"
+
+    def apply_review(self, *, invalid=False, evidence=None):
+        from fractions import Fraction
+
+        from seisslate.review import set_rms_review
+        from seisslate.rms import EpochEvidence, RmsReview, RmsWindow, RmsWindows
+
+        def grid(index):
+            return self.segment.start_ns + index * self.segment.period_ns
+
+        event = RmsWindow(*self.identity, grid(355) - Fraction(1, 3), grid(365))
+        background = RmsWindow(*self.identity, grid(375), grid(386 if invalid else 385))
+        windows = RmsWindows(
+            *self.identity, event, background,
+            EpochEvidence(evidence, verification="Independently compared instrument record") if evidence else None,
+            evidence,
+        )
+        review = RmsReview(windows, "accepted", "Reviewer", "Windows reviewed")
+        self.history.preview_rms_review(set_rms_review(self.history.current.state, self.catalog, review), "Applied selection")
+        return self.history.apply_rms(self.catalog, checked_evidence=(evidence,) if evidence else ())
+
+    def test_single_history_reopens_with_exact_intent_candidate_draft_omitted_and_redo(self):
+        from seisslate.review import mask_spans, set_rms_windows
+
+        accepted = self.apply_review()
+        self.assertTrue(accepted.state.rms.baseline.available)
+        masked = mask_spans(
+            accepted.state, (accepted.state.rms.baseline.event.span,), catalog=self.catalog, reason="Transient",
+        )
+        self.history.preview(masked, "Masked event")
+        masked = self.history.apply_rms(self.catalog)
+        self.history.undo()
+        state = set_rms_windows(accepted.state, self.catalog, replace(accepted.state.rms.windows, event=None))
+        self.history.preview(state, "Draft only")
+        self.api.save_session(self.path, self.catalog, self.history)
+        raw = json.loads(self.path.read_bytes())
+        self.assertEqual((raw["mode"], raw["schema_version"]), ("single-channel", 3))
+        self.assertEqual(raw["sources"][0]["path"], self.recording.name)
+        self.assertEqual(raw["revisions"][1]["state"]["receivers"], [])
+        self.assertNotIn(b"Draft only", self.path.read_bytes())
+        catalog, reopened = self.api.load_session(self.path)
+        self.assertEqual(reopened.current, accepted)
+        self.assertEqual(reopened.next_revision_id, self.history.next_revision_id)
+        self.assertTrue(reopened.replay_rms(catalog).ready)
+        self.assertEqual(reopened.redo(), masked)
+        self.assertEqual(reopened.current.state.interval_actions[0].reason, "Transient")
+        self.assertFalse(reopened.replay_rms(catalog).ready)
+
+    def test_accepted_but_unavailable_window_survives_reopen(self):
+        applied = self.apply_review(invalid=True)
+        self.api.save_session(self.path, self.catalog, self.history)
+        catalog, reopened = self.api.load_session(self.path)
+        self.assertEqual(reopened.current, applied)
+        replay = reopened.replay_rms(catalog)
+        self.assertEqual(replay.disposition, "accepted")
+        self.assertIn("unequal_length", replay.current.reasons)
+        self.assertFalse(replay.ready)
+
+    def test_replay_separates_numeric_baseline_and_checked_provenance(self):
+        from hashlib import sha256
+
+        from seisslate.rms import RmsEvidence
+
+        metadata = self.folder / "epoch-and-units.txt"
+        data = b"Test fixture supporting epoch and counts"
+        metadata.write_bytes(data)
+        evidence = RmsEvidence(
+            *self.identity, self.segment.start_ns, self.segment.time_ns(500),
+            metadata.name, sha256(data).hexdigest(), "Synthetic supporting record",
+        )
+        applied = self.apply_review(evidence=evidence)
+        self.assertEqual(applied.state.rms.baseline.units, "raw counts")
+        self.assertEqual(applied.state.rms.baseline.epoch_status, "independently_verified")
+        self.api.save_session(self.path, self.catalog, self.history)
+        catalog, reopened = self.api.load_session(self.path)
+        replay = reopened.replay_rms(catalog)
+        self.assertEqual(reopened.current, applied)
+        self.assertEqual(replay.current.units, "raw units unknown")
+        self.assertEqual(replay.current.epoch_status, "unverified")
+        self.assertEqual(replay.status, "numeric_match")
+        verified = reopened.replay_rms(catalog, checked_evidence=(evidence,))
+        self.assertEqual(verified.current.epoch_status, "independently_verified")
+        self.assertEqual(verified.current.units, "raw counts")
+
+        metadata.unlink()
+        raw = json.loads(self.path.read_bytes())
+        baseline = raw["revisions"][1]["state"]["rms"]["baseline"]
+        baseline["contrast"] *= 2
+        self.path.write_text(json.dumps(raw), encoding="utf-8")
+        catalog, reopened = self.api.load_session(self.path)
+        replay = reopened.replay_rms(catalog)
+        self.assertEqual(replay.current.epoch_status, "unverified")
+        self.assertEqual(replay.status, "numeric_mismatch")
+        self.assertEqual(replay.disposition, "accepted")
+        self.assertFalse(replay.ready)
+        comparison = next(check for check in replay.comparisons if check.quantity == "contrast")
+        self.assertEqual(comparison.baseline, baseline["contrast"])
+        self.assertEqual(comparison.current, applied.state.rms.baseline.contrast)
+        self.assertGreater(abs(comparison.delta), comparison.tolerance)
+
+
+    def test_single_channel_strict_payload_validation_covers_inactive_redo(self):
+        self.apply_review()
+        self.history.undo()
+        self.api.save_session(self.path, self.catalog, self.history)
+        original = self.path.read_bytes()
+        base = ("revisions", 1, "state")
+        rms = base + ("rms",)
+        window = rms + ("windows", "event")
+        baseline = rms + ("baseline",)
+        drop = object()
+        for path, invalid, reason in (
+            (rms, None, "single-channel RMS payload"),
+            (rms + ("new_key",), True, "fields"),
+            (rms + ("baseline",), None, "requires an RMS baseline"),
+            (rms + ("disposition",), "verified", "disposition"),
+            (base + ("timing_evidence",), "Fake timing support", "paired review"),
+            (window + ("channel",), "wrong", "selected source and channel"),
+            (window + ("start_ns", "denominator"), 0, "positive"),
+            (window + ("start_ns", "numerator"), True, "numerator"),
+            (window + ("stop_ns", "denominator"), drop, "RMS rational"),
+            (baseline + ("contrast",), float("inf"), "finite"),
+            (baseline + ("event", "mean"), float("nan"), "finite"),
+            (baseline + ("background", "rms"), False, "finite"),
+            (baseline + ("event", "span", "stop"), self.segment.npts + 1, "span"),
+            (baseline + ("epoch_status",), "confirmed", "epoch"),
+            (baseline + ("units",), "m/s", "RMS units"),
+            (baseline + ("samples_per_window",), True, "sample count"),
+            (baseline + ("samples_per_window",), 11, "RMS span lengths"),
+        ):
+            with self.subTest(path=path):
+                document = json.loads(original)
+                node = document
+                for field in path[:-1]:
+                    node = node[field]
+                if invalid is drop:
+                    del node[path[-1]]
+                else:
+                    node[path[-1]] = invalid
+                self.path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, reason):
+                    self.api.load_session(self.path)
+
+        document = json.loads(original)
+        document["revisions"][0]["state"]["rms"]["windows"]["channel"] = "some-other-channel"
+        self.path.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "source or mode"):
+            self.api.load_session(self.path)
+
+    def test_unsupported_rms_method_preserves_baseline_and_withholds_readiness(self):
+        applied = self.apply_review()
+        self.api.save_session(self.path, self.catalog, self.history)
+        document = json.loads(self.path.read_bytes())
+        document["revisions"][1]["state"]["rms"]["method_version"] = "demeaned-rms-v99"
+        self.path.write_text(json.dumps(document), encoding="utf-8")
+        catalog, reopened = self.api.load_session(self.path)
+        replay = reopened.replay_rms(catalog)
+        self.assertEqual(replay.baseline, applied.state.rms.baseline)
+        self.assertEqual(replay.disposition, "accepted")
+        self.assertEqual(replay.status, "unsupported_method")
+        self.assertIsNone(replay.current)
+        self.assertFalse(replay.ready)
+
+    def test_out_of_bounds_intent_retains_exact_endpoints_without_sample_span(self):
+        from seisslate.review import set_rms_windows
+
+        applied = self.apply_review()
+        windows = applied.state.rms.windows
+        outside = replace(windows.background, stop_ns=self.segment.start_ns + 10**14)
+        state = set_rms_windows(applied.state, self.catalog, replace(windows, background=outside))
+        self.history.preview(state, "Outside recorded coverage")
+        rejected = self.history.apply_rms(self.catalog)
+        self.assertIn("out_of_bounds", rejected.state.rms.baseline.background.reasons)
+        self.assertIsNone(rejected.state.rms.baseline.background.span)
+        self.api.save_session(self.path, self.catalog, self.history)
+        catalog, reopened = self.api.load_session(self.path)
+        self.assertEqual(reopened.current.state.rms.windows.background, outside)
+        self.assertIsNone(reopened.replay_rms(catalog).current.background.span)
+
+    def test_single_source_relink_and_fresh_process_replay(self):
+        applied = self.apply_review()
+        alias = self.folder / "Recording alias.mseed"
+        os.link(self.recording, alias)
+        before = self.recording.read_bytes()
+        with self.assertRaisesRegex(ValueError, "aliases a source recording"):
+            self.api.save_session(alias, self.catalog, self.history)
+        self.assertEqual(self.recording.read_bytes(), before)
+        alias.unlink()
+
+        self.api.save_session(self.path, self.catalog, self.history)
+        relocated = self.recording.rename(self.folder / "New recording é.mseed")
+        with self.assertRaises(self.api.MissingSourceError):
+            self.api.load_session(self.path)
+        with self.assertRaises(self.api.SourceMismatchError):
+            self.api.load_session(self.path, relink={self.identity[0]: FIXTURE / "calibration.mseed"})
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", """
+import json
+import sys
+from seisslate.session import load_session
+
+catalog, history = load_session(sys.argv[1], relink={sys.argv[2]: sys.argv[3]})
+replay = history.replay_rms(catalog)
+print(json.dumps([history.current.revision_id, replay.status, replay.ready, replay.current.contrast]))
+""", str(self.path), self.identity[0], str(relocated)],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(
+            json.loads(result.stdout), [1, "numeric_match", True, applied.state.rms.baseline.contrast],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

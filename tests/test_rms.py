@@ -297,5 +297,108 @@ class RmsTests(unittest.TestCase):
                 self.assertEqual(result.contrast, contrast)
 
 
+class AppliedRmsTests(unittest.TestCase):
+    build = RmsTests.build
+    evidence = staticmethod(RmsTests.evidence)
+    def single(self):
+        from seisslate.review import ReviewHistory
+
+        catalog, _, windows = self.build()
+        state = ReviewState.for_single_channel(windows.source_hash, windows.channel)
+        return catalog, ReviewHistory(state), windows
+
+    def test_applied_decision_and_mask_invalidation_are_separate_revisions(self):
+        from seisslate.review import mask_spans, set_rms_review
+        from seisslate.rms import RmsReview
+
+        catalog, history, windows = self.single()
+        state = history.current.state
+        review = RmsReview(windows, "accepted", "Analyst", "Windows chosen")
+        history.preview_rms_review(set_rms_review(state, catalog, review), "Review")
+        self.assertIsNone(history.current.state.rms.baseline)
+        applied = history.apply_rms(catalog)
+        self.assertEqual(applied.state.rms.disposition, "accepted")
+        self.assertTrue(history.replay_rms(catalog).ready)
+
+        span = applied.state.rms.baseline.event.span
+        masked = mask_spans(applied.state, (span,), catalog=catalog, reason="Transient")
+        history.preview(masked, "Mask")
+        with self.assertRaisesRegex(ValueError, "apply_rms"):
+            history.apply()
+        changed = history.apply_rms(catalog)
+        self.assertEqual(changed.state.rms.disposition, "candidate")
+        self.assertIn("masked_samples", changed.state.rms.baseline.reasons)
+        self.assertFalse(history.replay_rms(catalog).ready)
+        self.assertEqual(history.undo(), applied)
+        self.assertTrue(history.replay_rms(catalog).ready)
+
+    def test_single_channel_identity_cannot_change_or_have_paired_state(self):
+        from seisslate.review import Receiver
+
+        _, history, windows = self.single()
+        state = history.current.state
+        with self.assertRaisesRegex(ValueError, "source or mode"):
+            history.preview(ReviewState.for_single_channel(windows.source_hash, "another"), "Switch channel")
+        with self.assertRaisesRegex(ValueError, "paired"):
+            replace(state, receivers=(Receiver("original", windows.channel, windows.source_hash),))
+        self.assertEqual(state.single_channel_identity, (windows.source_hash, windows.channel))
+
+    def test_changing_windows_or_epoch_clears_prior_review(self):
+        from seisslate.review import set_rms_review, set_rms_windows
+        from seisslate.rms import RmsReview
+
+        catalog, history, windows = self.single()
+        state = history.current.state
+        review = set_rms_review(state, catalog, RmsReview(windows, "accepted", "A", "Checked"))
+        history.preview_rms_review(review, "Apply")
+        applied = history.apply_rms(catalog).state
+        for changed in (
+            replace(windows, background=None),
+            replace(windows, epoch_evidence=EpochEvidence(
+                self.evidence(windows.source_hash, windows.channel, 0, 8_000_000), verification="Checked",
+            )),
+        ):
+            with self.subTest(changed=changed):
+                preview = set_rms_windows(applied, catalog, changed)
+                self.assertEqual(preview.rms.disposition, "candidate")
+                self.assertIsNone(preview.rms.baseline)
+                self.assertEqual(history.current.state, applied)
+
+
+    def test_generic_preview_cannot_carry_acceptance_across_changed_rms_evidence(self):
+        from seisslate.review import set_rms_review
+        from seisslate.rms import RmsReview
+
+        catalog, history, windows = self.single()
+        # Unchanged windows can receive a new disposition after a candidate selection.
+        candidate = set_rms_review(history.current.state, catalog, RmsReview(windows))
+        history.preview(candidate, "Select candidate windows")
+        history.apply_rms(catalog)
+        reviewed = RmsReview(windows, "accepted", "Analyst", "Reviewed the windows")
+        history.preview(set_rms_review(history.current.state, catalog, reviewed), "Accept")
+        accepted = history.apply_rms(catalog)
+
+        reference = self.evidence(windows.source_hash, windows.channel, 0, 8_000_000)
+        for changed in (
+            replace(windows, background=None),
+            replace(windows, epoch_evidence=EpochEvidence(reference)),
+            replace(windows, counts_evidence=reference),
+        ):
+            with self.subTest(changed=changed):
+                carried = replace(accepted.state, rms=replace(reviewed, windows=changed))
+                with self.assertRaisesRegex(ValueError, "explicit RMS review"):
+                    history.preview(carried, "Change previously reviewed support")
+                self.assertIsNone(history.draft)
+                self.assertIs(history.current, accepted)
+
+        reviewed_again = RmsReview(replace(windows, background=None), "accepted", "Analyst", "Reassessed")
+        changed = set_rms_review(accepted.state, catalog, reviewed_again)
+        history.preview_rms_review(changed, reviewed_again.reason)
+        applied = history.apply_rms(catalog)
+        self.assertEqual(applied.state.rms.disposition, "accepted")
+        self.assertEqual(applied.state.rms.baseline.reasons, ("missing_window",))
+        self.assertFalse(history.replay_rms(catalog).ready)
+
+
 if __name__ == "__main__":
     unittest.main()

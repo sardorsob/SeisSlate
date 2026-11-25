@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from math import ceil, frexp, fsum, isfinite, ldexp, sqrt
 from sys import float_info
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
 
 
 RMS_METHOD = "demeaned-rms-v1"
+RMS_REPLAY_RELATIVE_TOLERANCE = 1e-12
 MAX_WINDOW_SAMPLES = 1_000_000
 UtcNs = int | Fraction
 EpochStatus = Literal["unknown", "unverified", "independently_verified", "conflicting"]
@@ -29,7 +31,7 @@ RmsReason = Literal[
     "too_short", "too_large", "overlapping_windows", "ambiguous_coverage", "masked_samples",
     "nonfinite_samples", "epoch_conflict", "zero_background", "numeric_failure",
 ]
-_REASON_ORDER: tuple[RmsReason, ...] = (
+RMS_REASON_ORDER: tuple[RmsReason, ...] = (
     "missing_window", "wrong_source_or_channel", "cross_segment", "out_of_bounds", "unequal_length",
     "too_short", "too_large", "overlapping_windows", "ambiguous_coverage", "masked_samples",
     "nonfinite_samples", "epoch_conflict", "zero_background", "numeric_failure",
@@ -146,8 +148,11 @@ class RmsReview:
     reviewer: str = ""
     reason: str = ""
     baseline: RmsResult | None = None
+    method_version: str = RMS_METHOD
 
     def __post_init__(self) -> None:
+        if type(self.method_version) is not str or not self.method_version.strip():
+            raise ValueError("RMS method version is required")
         if self.disposition not in ("candidate", "accepted", "unresolved", "rejected"):
             raise ValueError("Unknown RMS review disposition")
         if not isinstance(self.reviewer, str) or not isinstance(self.reason, str):
@@ -298,6 +303,18 @@ def _provenance(windows: RmsWindows, identity: tuple[str, str]) -> tuple[EpochSt
     return ("independently_verified" if epoch.verification.strip() and covers(epoch.reference) else "unverified"), units
 
 
+def validate_baseline_provenance(windows: RmsWindows, baseline: RmsResult) -> None:
+    """Check that the historical labels are possible with the retained references."""
+    epoch, units = _provenance(windows, (windows.source_hash, windows.channel))
+    allowed_epochs = (epoch, "unverified") if epoch == "independently_verified" else (epoch,)
+    if baseline.epoch_status not in allowed_epochs or baseline.units not in (units, "raw units unknown"):
+        raise ValueError("RMS baseline provenance does not match the retained evidence")
+    if ("epoch_conflict" in baseline.reasons) != (baseline.epoch_status == "conflicting"):
+        raise ValueError("RMS baseline conflict reason does not match its epoch status")
+    if ("zero_background" in baseline.reasons) != (baseline.background.rms == 0):
+        raise ValueError("RMS baseline zero-background reason does not match its background RMS")
+
+
 def compute_rms_contrast(catalog: SourceCatalog, state: ReviewState, windows: RmsWindows) -> RmsResult:
     """Measure equal original-sample windows and report reasons for unavailable contrast."""
     identity = windows.source_hash, windows.channel
@@ -346,5 +363,85 @@ def compute_rms_contrast(catalog: SourceCatalog, state: ReviewState, windows: Rm
         except ArithmeticError:
             reasons.add("numeric_failure")
 
-    return RmsResult(event, background, tuple(reason for reason in _REASON_ORDER if reason in reasons), contrast,
+    return RmsResult(event, background, tuple(reason for reason in RMS_REASON_ORDER if reason in reasons), contrast,
                      count, duration, epoch, units)
+
+
+@dataclass(frozen=True)
+class RmsComparison:
+    quantity: str
+    baseline: float | None
+    current: float | None
+    delta: float | None
+    tolerance: float | None
+    matches: bool
+
+
+@dataclass(frozen=True)
+class RmsReplay:
+    disposition: RmsDisposition
+    baseline: RmsResult | None
+    current: RmsResult | None = None
+    status: Literal["not_recorded", "unsupported_method", "numeric_match", "numeric_mismatch"] = "not_recorded"
+    comparisons: tuple[RmsComparison, ...] = ()
+    structure_matches: bool | None = None
+
+    @property
+    def ready(self) -> bool:
+        return (
+            self.disposition == "accepted" and self.status == "numeric_match"
+            and self.current is not None and self.current.available
+        )
+
+
+def measure_review(
+    catalog: SourceCatalog, state: ReviewState, windows: RmsWindows, *, checked_evidence: Iterable[RmsEvidence] = (),
+) -> RmsResult:
+    """Use only supporting records the caller independently checked for this run."""
+    checked = tuple(checked_evidence)
+    epoch = windows.epoch_evidence
+    if epoch is not None and epoch.reference not in checked:
+        epoch = replace(epoch, verification="")
+    counts = windows.counts_evidence if windows.counts_evidence in checked else None
+    return compute_rms_contrast(catalog, state, replace(windows, epoch_evidence=epoch, counts_evidence=counts))
+
+
+def _compare_number(quantity: str, baseline: float | None, current: float | None) -> RmsComparison:
+    if baseline is None or current is None:
+        return RmsComparison(quantity, baseline, current, None, None, baseline is current)
+    delta = current - baseline
+    tolerance = abs(baseline) * RMS_REPLAY_RELATIVE_TOLERANCE
+    # Exact zero has a distinct interpretation, including at the subnormal boundary.
+    matches = (baseline == 0) == (current == 0) and abs(delta) <= tolerance
+    return RmsComparison(quantity, baseline, current, delta if isfinite(delta) else None, tolerance, matches)
+
+
+def inspect_rms_review(
+    catalog: SourceCatalog, state: ReviewState, review: RmsReview, *, checked_evidence: Iterable[RmsEvidence] = (),
+) -> RmsReplay:
+    baseline = review.baseline
+    if review.method_version != RMS_METHOD:
+        return RmsReplay(review.disposition, baseline, status="unsupported_method")
+    current = measure_review(catalog, state, review.windows, checked_evidence=checked_evidence)
+    if baseline is None:
+        return RmsReplay(review.disposition, baseline, current)
+
+    def structure(result: RmsResult) -> tuple:
+        return (
+            result.event.span, result.event.reasons, result.background.span, result.background.reasons,
+            result.reasons, result.samples_per_window, result.duration_ns,
+        )
+
+    structure_matches = structure(baseline) == structure(current)
+    comparisons = (
+        _compare_number("event_mean", baseline.event.mean, current.event.mean),
+        _compare_number("event_rms", baseline.event.rms, current.event.rms),
+        _compare_number("background_mean", baseline.background.mean, current.background.mean),
+        _compare_number("background_rms", baseline.background.rms, current.background.rms),
+        _compare_number("contrast", baseline.contrast, current.contrast),
+    )
+    matches = structure_matches and all(check.matches for check in comparisons)
+    return RmsReplay(
+        review.disposition, baseline, current, "numeric_match" if matches else "numeric_mismatch",
+        comparisons, structure_matches,
+    )

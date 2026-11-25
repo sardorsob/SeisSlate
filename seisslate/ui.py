@@ -1,11 +1,12 @@
-"""Snuffler workbench for paired, source-referenced seismic review."""
+"""Snuffler workbench for paired and standalone seismic review."""
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from datetime import datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
-from math import nextafter
+from math import ceil, nextafter, ulp
 from pathlib import Path
 from platform import python_version
 from time import time_ns
@@ -26,8 +27,10 @@ from .raw_view import RAW_ORDINATE_SCALE, RawView
 from .review import (
     Blow, Pick, Receiver, ReviewHistory, ReviewState, Revision, Role, add_blow, add_groups, mask_spans,
     move_pick, nudge_pick, restore_spans, set_geometry, set_inclusion,
-    set_group_reviewed, set_pair_status, set_pick_decision,
+    set_group_reviewed, set_pair_status, set_pick_decision, set_rms_review,
 )
+from .rms import RmsReview, RmsWindow, measure_review
+from .rms_view import RawBand, RmsPanel, boundary_ns
 from .sources import NS_PER_SECOND, SampleRef, SampleSpan, Segment, SourceCatalog, load_source, utc_ns
 
 
@@ -70,6 +73,17 @@ def _marker(channel, start_ns, stop_ns=None, *, kind):
     return Marker([_nslc(channel)], start, stop, kind=kind)
 
 
+class LabeledInterval(Marker):
+    def __init__(self, channel, band, *, kind):
+        start = float(band.start_ns / NS_PER_SECOND)
+        stop = nextafter(float(band.stop_ns / NS_PER_SECOND), start)
+        super().__init__([_nslc(channel)], start, stop, kind=kind)
+        self.label = band.label
+
+    def get_label(self):
+        return self.label
+
+
 class Workbench(qc.QObject):
     def __init__(self, window, initial=None, *, fixture=None):
         super().__init__(window)
@@ -105,6 +119,9 @@ class Workbench(qc.QObject):
         self._raw_confirmation: RawConfirmation | None = None
         self._raw_dirty = True
         self._raw_gap = False
+        self._rms_loading = False
+        self._rms_applied_form = None
+        self._rms_preview_form = None
 
         window.setWindowTitle("SeisSlate")
         window.resize(1440, 920)
@@ -114,6 +131,7 @@ class Workbench(qc.QObject):
         toolbar = window.addToolBar("Review files")
         for name, label, method in (
             ("open_pair_action", "Open pair…", self.open_pair),
+            ("open_single_action", "Open single channel…", self.open_single),
             ("open_session_action", "Open review…", self.open_review),
             ("example_action", "Synthetic example", self.open_example),
             ("save_action", "Save review…", self.save_review),
@@ -125,17 +143,26 @@ class Workbench(qc.QObject):
         file_menu.addSeparator()
         self.export_evidence_action = file_menu.addAction("Export evidence CSV…")
         self.export_evidence_action.triggered.connect(self.wrap(self.export_evidence_review))
+        self.export_rms_action = file_menu.addAction("Export RMS review CSV…")
+        self.export_rms_action.triggered.connect(self.wrap(self.export_rms_review))
+        self.export_rms_action.setVisible(False)
+        file_menu.addAction(self.open_single_action)
         self.open_pair_action.setShortcut(qg.QKeySequence.Open)
         self.save_action.setShortcut(qg.QKeySequence.Save)
 
         panel = qw.QWidget()
         panel_layout = qw.QVBoxLayout(panel)
-        self.source_label = qw.QLabel("Open a recording pair, saved review, or synthetic example.")
+        self.source_label = qw.QLabel("Open a recording pair, a single channel, a saved review, or the synthetic example.")
         self.source_label.setTextFormat(qc.Qt.PlainText)
         self.source_label.setWordWrap(True)
         panel_layout.addWidget(self.source_label)
+        self.rms_panel = RmsPanel()
+        panel_layout.addWidget(self.rms_panel.applied)
+        self.rms_panel.applied.hide()
 
-        navigation = qw.QHBoxLayout()
+        self.paired_navigation = qw.QWidget()
+        navigation = qw.QHBoxLayout(self.paired_navigation)
+        navigation.setContentsMargins(0, 0, 0, 0)
         self.unresolved_filter = qw.QComboBox()
         self.unresolved_filter.setAccessibleName("Unresolved review filter")
         self.unresolved_filter.addItem("Hammer groups", "groups")
@@ -143,7 +170,7 @@ class Workbench(qc.QObject):
         navigation.addWidget(self.unresolved_filter)
         self.button(navigation, "previous_unresolved", "Previous unresolved", lambda: self.unresolved(-1))
         self.button(navigation, "next_unresolved", "Next unresolved", lambda: self.unresolved(1))
-        panel_layout.addLayout(navigation)
+        panel_layout.addWidget(self.paired_navigation)
         for name, keys in (("previous_unresolved", "Ctrl+Up"), ("next_unresolved", "Ctrl+Down")):
             self.buttons[name].setShortcut(qg.QKeySequence(keys))
             self.buttons[name].setToolTip(keys)
@@ -154,6 +181,8 @@ class Workbench(qc.QObject):
         layout = qw.QVBoxLayout(paired)
         self.review_tabs.addTab(paired, "Paired review")
         self.review_tabs.addTab(self.create_group_panel(), "Hammer groups")
+        self.rms_tab = self.review_tabs.addTab(self.rms_panel, "Event / Background")
+        self.review_tabs.setTabVisible(self.rms_tab, False)
 
         self.table = qw.QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(("Blow", "Fit status", "Lag (ms)", "Orig. UTC", "Cal. UTC",
@@ -232,8 +261,10 @@ class Workbench(qc.QObject):
         self.status.setWordWrap(True)
         panel_layout.addWidget(self.status)
         window.add_panel("Paired review", panel, visible=True, where=qc.Qt.RightDockWidgetArea)
+        self.review_dock = panel.parentWidget()
         self.create_evidence_panel()
         self.role.currentIndexChanged.connect(self.update_controls)
+        self.connect_rms_panel()
 
         if initial is not None:
             self.set_session(*initial)
@@ -595,13 +626,13 @@ class Workbench(qc.QObject):
     @property
     def catalog(self) -> SourceCatalog:
         if self._active is None:
-            raise ValueError("Open a recording pair first.")
+            raise ValueError("Open a recording first.")
         return self._active[0]
 
     @property
     def history(self) -> ReviewHistory:
         if self._active is None:
-            raise ValueError("Open a recording pair first.")
+            raise ValueError("Open a recording first.")
         return self._active[1]
 
     def wrap(self, method):
@@ -629,12 +660,16 @@ class Workbench(qc.QObject):
             if event.key() in protected and any(
                 marker in self.managed_markers for marker in self.overlay.get_selected_markers()
             ):
-                self.status.setText("Use the review controls to edit a saved or preview pick.")
+                target = "window or mask" if self.single_mode() else "pick"
+                self.status.setText(f"Use the review controls to edit a saved or preview {target}.")
                 return True
         return False
 
     def confirm_switch(self):
-        if self._active is None or (self.history.draft is None and self.history_stamp() == self.saved_revision):
+        if self._active is None or (
+            self.history.draft is None and self.history_stamp() == self.saved_revision
+            and (not self.single_mode() or not self.rms_form_dirty())
+        ):
             return True
         result = qw.QMessageBox.question(
             self.window, "Unsaved review", "Discard unsaved changes?",
@@ -646,21 +681,32 @@ class Workbench(qc.QObject):
         return tuple(self.history.revisions), self.history.cursor
 
     def set_session(self, catalog, history, path=None):
-        receivers = {receiver.role: receiver for receiver in history.current.state.receivers}
-        if set(receivers) != set(ROLES):
-            raise ValueError("Choose one channel for each of the two receiver roles.")
-        if receivers["original"].channel == receivers["calibration"].channel:
-            raise ValueError("Snuffler needs distinct trace IDs for the two receiver tracks.")
-        segments = tuple(
-            segment for role in ROLES for segment in catalog.segments
-            if segment.channel == receivers[role].channel
-            and receivers[role].source_hash in ("", segment.source_hash)
-        )
-        if len({segment.channel for segment in segments}) != 2:
-            raise ValueError("Both receiver channels need recorded coverage.")
-        segment_ids = {segment.segment_id for segment in segments}
-        if any(a in segment_ids and b in segment_ids for a, b in catalog.overlaps):
-            raise ValueError("The selected channels have overlapping source segments. Choose unambiguous recordings.")
+        state = history.current.state
+        if state.mode == "single-channel":
+            receivers = {}
+            segments = tuple(sorted(
+                (segment for segment in catalog.segments
+                 if (segment.source_hash, segment.channel) == state.single_channel_identity),
+                key=lambda segment: segment.start_ns,
+            ))
+            if not segments:
+                raise ValueError("The chosen channel needs recorded coverage.")
+        else:
+            receivers = {receiver.role: receiver for receiver in state.receivers}
+            if set(receivers) != set(ROLES):
+                raise ValueError("Choose one channel for each of the two receiver roles.")
+            if receivers["original"].channel == receivers["calibration"].channel:
+                raise ValueError("Snuffler needs distinct trace IDs for the two receiver tracks.")
+            segments = tuple(
+                segment for role in ROLES for segment in catalog.segments
+                if segment.channel == receivers[role].channel
+                and receivers[role].source_hash in ("", segment.source_hash)
+            )
+            if len({segment.channel for segment in segments}) != 2:
+                raise ValueError("Both receiver channels need recorded coverage.")
+            segment_ids = {segment.segment_id for segment in segments}
+            if any(a in segment_ids and b in segment_ids for a, b in catalog.overlaps):
+                raise ValueError("The selected channels have overlapping source segments. Choose unambiguous recordings.")
         traces = [Trace(*_nslc(seg.channel), tmin=seg.start_ns / NS_PER_SECOND,
                         deltat=1 / seg.sampling_rate_hz, ydata=seg.data) for seg in segments]
         for marker in list(self.overlay.get_markers()):
@@ -677,12 +723,37 @@ class Workbench(qc.QObject):
         self.selected_group_id = None
         self.session_path = path
         self.saved_revision = self.history_stamp()
-        self.source_label.setText(
-            f"Original  {receivers['original'].channel}   ·   Calibration  {receivers['calibration'].channel}\n"
-            "Waveform navigation view; processing not recorded."
-        )
-        self.source_label.setToolTip(history.current.state.timing_evidence or "Receiver timing evidence not recorded.")
-        self.reason.clear()
+        single = self.single_mode()
+        self.paired_navigation.setVisible(not single)
+        self.rms_panel.applied.setVisible(single)
+        self.review_tabs.setTabVisible(self.rms_tab, single)
+        self.review_tabs.setTabVisible(0, not single)
+        self.review_tabs.setTabVisible(1, not single)
+        self.review_tabs.setCurrentIndex(self.rms_tab if single else 0)
+        self.review_dock.setWindowTitle("Event / Background" if single else "Paired review")
+        self.export_rms_action.setVisible(single)
+        self.export_action.setVisible(not single)
+        self.export_evidence_action.setVisible(not single)
+        self._rms_loading = True
+        try:
+            self.reason.clear()
+            if single:
+                source_hash, channel = state.single_channel_identity
+                source = next(source for source in catalog.sources if source.sha256 == source_hash)
+                self.source_label.setText(
+                    f"{channel} · {source.path.name}\n"
+                    "Raw sample view below. Snuffler is the waveform navigation view."
+                )
+                self.source_label.setToolTip(f"{source.path}\nSHA-256 {source_hash}")
+                self.rms_panel.load_segments(segments)
+            else:
+                self.source_label.setText(
+                    f"Original  {receivers['original'].channel}   ·   Calibration  {receivers['calibration'].channel}\n"
+                    "Waveform navigation view; processing not recorded."
+                )
+                self.source_label.setToolTip(history.current.state.timing_evidence or "Receiver timing evidence not recorded.")
+        finally:
+            self._rms_loading = False
         self.refresh()
         self.overview()
 
@@ -723,6 +794,223 @@ class Workbench(qc.QObject):
             return
         state = ReviewState(blows=(), receivers=tuple(receivers), timing_evidence=evidence.strip())
         self.set_session(SourceCatalog(tuple(sources)), ReviewHistory(state))
+
+    def open_single(self):
+        if not self.confirm_switch():
+            return
+        name, _ = qw.QFileDialog.getOpenFileName(self.window, "Open single-channel MiniSEED", "", MINISEED_FILTER)
+        if not name:
+            return
+        source = load_source(name)
+        channels = sorted({segment.channel for segment in source.segments})
+        channel = channels[0]
+        if len(channels) > 1:
+            channel, accepted = qw.QInputDialog.getItem(
+                self.window, "Single-channel review", "Choose the recorded channel", channels, editable=False,
+            )
+            if not accepted:
+                return
+        state = ReviewState.for_single_channel(source.sha256, channel)
+        self.set_session(SourceCatalog((source,)), ReviewHistory(state))
+
+    def single_mode(self) -> bool:
+        return self._active is not None and self.state().mode == "single-channel"
+
+    def connect_rms_panel(self):
+        panel = self.rms_panel
+        for editor in (panel.event, panel.background):
+            editor.use_marker.clicked.connect(self.wrap(lambda editor=editor: self.use_rms_marker(editor)))
+            editor.clear_button.clicked.connect(lambda _checked=False, editor=editor: self.set_rms_window(editor, None))
+            editor.segment.currentIndexChanged.connect(self.rms_window_inputs_changed)
+            editor.start.textChanged.connect(self.rms_window_inputs_changed)
+            editor.stop.textChanged.connect(self.rms_window_inputs_changed)
+        panel.disposition.currentIndexChanged.connect(self.rms_inputs_changed)
+        panel.reviewer.textChanged.connect(self.rms_inputs_changed)
+        self.reason.textChanged.connect(self.rms_inputs_changed)
+        panel.preview_button.clicked.connect(self.wrap(self.preview_rms))
+        panel.mask_button.clicked.connect(self.wrap(lambda: self.preview_rms_mask(restore=False)))
+        panel.restore_button.clicked.connect(self.wrap(lambda: self.preview_rms_mask(restore=True)))
+        panel.overview_button.clicked.connect(self.wrap(self.overview))
+
+    def rms_form_stamp(self):
+        return self.rms_panel.stamp(), self.reason.text().strip()
+
+    def rms_form_dirty(self) -> bool:
+        return self._rms_applied_form != self.rms_form_stamp()
+
+    def rms_inputs_changed(self, *_):
+        if not self._rms_loading and self.single_mode():
+            self.update_rms_controls()
+
+    def rms_window_inputs_changed(self, *_):
+        if not self._rms_loading and self.single_mode():
+            # Editing a window requires a fresh disposition before Apply.
+            panel = self.rms_panel
+            with qc.QSignalBlocker(panel.disposition):
+                panel.disposition.setCurrentIndex(panel.disposition.findData("candidate"))
+            self.update_rms_controls()
+
+    def rms_marker_window(self):
+        marker = self.selected_marker(interval=True)
+        source_hash, channel = self.state().single_channel_identity
+        if set(marker.get_nslc_ids()) != {_nslc(channel)}:
+            raise ValueError("Mark an interval on the selected channel's track.")
+        start_seconds, stop_seconds = marker.get_tmin(), marker.get_tmax()
+        start, stop = _marker_ns(start_seconds), _marker_ns(stop_seconds)
+        # The navigator uses floating seconds. Allow its conversion error at coverage edges.
+        tolerance = max(1, round(max(ulp(float(start_seconds)), ulp(float(stop_seconds))) * NS_PER_SECOND))
+        covering = [
+            segment for segment in self.segments
+            if segment.start_ns - tolerance <= start < stop <= boundary_ns(segment, segment.npts) + tolerance
+        ]
+        snapped = False
+        if len(covering) == 1:
+            segment = covering[0]
+            first = round((start - segment.start_ns) / segment.period_ns)
+            last = round((stop - segment.start_ns) / segment.period_ns)
+            if 0 <= first < last <= segment.npts:
+                start, stop = boundary_ns(segment, first), boundary_ns(segment, last)
+                snapped = True
+        return marker, RmsWindow(source_hash, channel, start, stop), snapped
+
+    def set_rms_window(self, editor, request):
+        self._rms_loading = True
+        try:
+            editor.set_request(request, self.segments)
+        finally:
+            self._rms_loading = False
+        self.rms_window_inputs_changed()
+
+    def use_rms_marker(self, editor):
+        marker, request, snapped = self.rms_marker_window()
+        self.set_rms_window(editor, request)
+        self.viewer.remove_marker(marker)
+        self.status.setText(
+            "Waveform endpoints snapped to the nearest sample boundaries. Preview to inspect exact support."
+            if snapped else "Requested UTC interval retained. Preview to inspect its recorded coverage."
+        )
+
+    def preview_rms(self):
+        panel = self.rms_panel
+        state = self.state()
+        windows = state.rms.windows
+        windows = replace(windows, event=panel.event.window(self.segments),
+                          background=panel.background.window(self.segments))
+        disposition, reviewer = panel.disposition.currentData(), panel.reviewer.text().strip()
+        reason = self.reason.text().strip()
+        if not reason and windows == state.rms.windows and (
+            disposition, reviewer
+        ) == (state.rms.disposition, state.rms.reviewer):
+            reason = state.rms.reason
+        review = RmsReview(windows, disposition, reviewer, reason)
+        edited = set_rms_review(state, self.catalog, review)
+        self.stage_rms(edited, review.reason or "Preview event and background windows", review_windows=True)
+
+    def preview_rms_mask(self, *, restore):
+        if self.history.draft is not None or self.rms_panel.stamp() != self._rms_applied_form[0]:
+            raise ValueError("Apply or cancel window edits before editing masks.")
+        marker, request, _ = self.rms_marker_window()
+        spans = []
+        for segment in self.segments:
+            start = max(0, ceil((request.start_ns - segment.start_ns) / segment.period_ns))
+            stop = min(segment.npts, ceil((request.stop_ns - segment.start_ns) / segment.period_ns))
+            if start < stop:
+                spans.append(SampleSpan(segment.segment_id, start, stop))
+        if not spans:
+            raise ValueError("The selected mask interval contains no samples.")
+        reason = self.reason.text().strip()
+        require_reason(reason, "A restore" if restore else "A mask")
+        edit = restore_spans if restore else mask_spans
+        state = edit(self.state(), spans, catalog=self.catalog, reason=reason)
+        self.stage_rms(state, reason)
+        self.viewer.remove_marker(marker)
+
+    def stage_rms(self, state, reason, *, review_windows=False):
+        review = state.rms
+        result = measure_review(self.catalog, state, review.windows) if review else None
+        preview = self.history.preview_rms_review if review_windows else self.history.preview
+        preview(state, reason)
+        self._rms_preview_form = self.rms_form_stamp()
+        self.rms_panel.preview.setText(self.rms_panel.summary("Preview", review, result, self.catalog))
+        self.render_markers()
+        self.update_rms_controls()
+        self.rms_panel.ensureWidgetVisible(self.rms_panel.preview)
+
+    def rms_bands(self, state):
+        bands = []
+        if state.rms is not None:
+            windows = state.rms.windows
+            bands.extend(RawBand(label, window.start_ns, window.stop_ns) for label, window in (
+                ("Event E", windows.event), ("Background B", windows.background),
+            ) if window is not None)
+        for span in state.masks:
+            segment = self.catalog.segment(span.segment_id)
+            bands.append(RawBand("Mask", boundary_ns(segment, span.start), boundary_ns(segment, span.stop)))
+        return tuple(bands)
+
+    def refresh_rms(self):
+        panel = self.rms_panel
+        review = self.state().rms
+        replay = self.history.replay_rms(self.catalog)
+        panel.applied.setText(panel.summary("Applied", review, replay.current, self.catalog,
+                                           replay_status=replay.status, ready=replay.ready, detail=False))
+        source_hash, channel = self.state().single_channel_identity
+        versions = " · ".join(f"{name} {release}" for name, release in _capture_versions())
+        replay_text = replay.status.replace("_", " ")
+        details = [f"Source SHA-256 {source_hash} · {channel}", f"Replay {replay_text}"]
+        if review:
+            details.append(f"Method {review.method_version}")
+            details.extend(panel.window_details(review, replay.current, self.catalog))
+        details.extend(
+            f"{item.quantity} · baseline {item.baseline} · current {item.current} · "
+            f"delta {item.delta} · tolerance {item.tolerance}"
+            for item in replay.comparisons
+        )
+        panel.provenance.setPlainText("\n".join([*details, f"Runtime {versions}"]))
+        self._rms_loading = True
+        try:
+            panel.load_review(review, self.segments)
+            self.reason.clear()
+        finally:
+            self._rms_loading = False
+        self._rms_applied_form = self.rms_form_stamp()
+        self._rms_preview_form = None
+        panel.preview.clear()
+        panel.preview.hide()
+        panel.verticalScrollBar().setValue(0)
+        self.render_markers()
+        self.update_rms_controls()
+
+    def update_rms_controls(self):
+        draft = self.history.draft
+        pending = draft is not None
+        dirty = self.rms_form_dirty()
+        for button in self.buttons.values():
+            button.setEnabled(False)
+        self.buttons["apply"].setEnabled(pending and self._rms_preview_form == self.rms_form_stamp())
+        self.buttons["cancel"].setEnabled(pending or dirty)
+        self.buttons["undo"].setEnabled(not pending and not dirty and self.history.can_undo)
+        self.buttons["redo"].setEnabled(not pending and not dirty and self.history.can_redo)
+        self.save_action.setEnabled(not pending and not dirty)
+        self.export_action.setEnabled(False)
+        self.export_evidence_action.setEnabled(False)
+        self.export_rms_action.setEnabled(not pending and not dirty)
+        panel = self.rms_panel
+        mask_available = not pending and self._rms_applied_form is not None and panel.stamp() == self._rms_applied_form[0]
+        panel.mask_button.setEnabled(mask_available)
+        panel.restore_button.setEnabled(mask_available)
+        if pending:
+            current = self._rms_preview_form == self.rms_form_stamp()
+            panel.preview.setVisible(current)
+            if current:
+                self.status.setText(f"Preview · {draft.reason}. Applied result remains displayed.")
+            else:
+                self.status.setText("Window edits changed. Preview again or cancel.")
+        elif dirty:
+            self.status.setText("Window edits pending. Preview or cancel.")
+        else:
+            saved = " · unsaved changes" if self.history_stamp() != self.saved_revision else ""
+            self.status.setText(f"Applied revision {self.history.current.revision_id}{saved}")
 
     def open_review(self):
         from .session import SessionSourceError, load_session
@@ -771,6 +1059,11 @@ class Workbench(qc.QObject):
 
         self._export_csv(export_evidence_csv, "Export applied pick evidence", "review-evidence.csv")
 
+    def export_rms_review(self):
+        from .session import export_rms_csv
+
+        self._export_csv(export_rms_csv, "Export applied RMS review", "review-rms.csv")
+
     def _export_csv(self, writer, title: str, default_name: str) -> None:
         if self.history.draft is not None:
             raise ValueError("Apply or cancel the preview before exporting.")
@@ -806,6 +1099,17 @@ class Workbench(qc.QObject):
         applied = self.state()
         draft = self.history.draft
         state = draft.state if draft else applied
+        if self.single_mode():
+            bands = self.rms_bands(state)
+            for band in bands:
+                kind = {"Event E": 2, "Background B": 1, "Mask": 3}[band.label]
+                marker = LabeledInterval(state.single_channel_identity[1], band, kind=kind)
+                self.managed_markers[marker] = None
+            if self.managed_markers:
+                self.overlay.add_markers(list(self.managed_markers))
+            self.rms_panel.draw_raw(self.segments, bands, draft=draft is not None)
+            self.viewer.update()
+            return
         previous = {blow.blow_id: blow for blow in applied.blows}
         for blow in state.blows:
             for role in ROLES:
@@ -1094,7 +1398,12 @@ class Workbench(qc.QObject):
             self.save_action.setEnabled(False)
             self.export_action.setEnabled(False)
             self.export_evidence_action.setEnabled(False)
+            self.export_rms_action.setEnabled(False)
             return
+        if self.single_mode():
+            self.update_rms_controls()
+            return
+        self.export_rms_action.setEnabled(False)
         draft = self.history.draft
         pending = draft is not None
         selected = self.selected_blow_id is not None
@@ -1137,6 +1446,9 @@ class Workbench(qc.QObject):
             self.status.setText(f"Applied revision {self.history.current.revision_id}{saved}")
 
     def refresh(self):
+        if self.single_mode():
+            self.refresh_rms()
+            return
         if self.selected_blow() is None:
             blows = self.state().blows
             self.selected_blow_id = blows[0].blow_id if blows else None
@@ -1242,6 +1554,8 @@ class Workbench(qc.QObject):
             self.select_blow(self.plot_blow_ids[event.ind[0]])
 
     def link_marker_selection(self, _selection):
+        if self.single_mode():
+            return
         selected = self.overlay.get_selected_markers()
         if len(selected) == 1:
             blow_id = self.managed_markers.get(selected[0])
@@ -1277,7 +1591,11 @@ class Workbench(qc.QObject):
         self.update_controls()
 
     def apply(self):
-        if self._raw_draft is None:
+        if self.single_mode():
+            if self.history.draft is None or self._rms_preview_form != self.rms_form_stamp():
+                raise ValueError("Preview the edited windows before Apply.")
+            self.history.apply_rms(self.catalog)
+        elif self._raw_draft is None:
             self.history.apply()
         else:
             view = self.displayed_raw_evidence()
@@ -1295,7 +1613,8 @@ class Workbench(qc.QObject):
             self._raw_draft = None
             self._raw_confirmation = None
             self.evidence_notice.setText("Review applied.")
-        self.reason.clear()
+        if not self.single_mode():
+            self.reason.clear()
         self.refresh()
 
     def cancel(self):

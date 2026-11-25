@@ -14,9 +14,11 @@ from .evidence import (
 )
 from .evidence import Role as Role
 from .groups import GroupWindow
+from .rms import RMS_METHOD, RmsEvidence, RmsReplay, RmsReview, RmsWindows, inspect_rms_review, measure_review
 from .sources import SampleRef, SampleSpan, SourceCatalog
 
 
+ReviewMode = Literal["paired", "single-channel"]
 PairStatus = Literal["confirmed", "ambiguous", "unmatched"]
 _PAIR_STATUSES = ("confirmed", "ambiguous", "unmatched")
 
@@ -78,6 +80,8 @@ class ReviewState:
     pick_decisions: tuple[PickDecision, ...] = ()
     interval_actions: tuple[IntervalAction, ...] = ()
     raw_evidence: tuple[RawEvidence, ...] = ()
+    mode: ReviewMode = "paired"
+    rms: RmsReview | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "blows", tuple(self.blows))
@@ -87,6 +91,24 @@ class ReviewState:
         object.__setattr__(self, "pick_decisions", tuple(self.pick_decisions))
         object.__setattr__(self, "interval_actions", tuple(self.interval_actions))
         object.__setattr__(self, "raw_evidence", tuple(self.raw_evidence))
+        if self.mode == "single-channel":
+            if self.blows or self.receivers or self.timing_evidence or self.groups or self.pick_decisions or self.raw_evidence:
+                raise ValueError("A single-channel review cannot contain paired review records")
+            if self.rms is None:
+                raise ValueError("A single-channel review needs an RMS payload")
+            windows = self.rms.windows
+            identity = windows.source_hash, windows.channel
+            if any(type(value) is not str or not value.strip() for value in identity):
+                raise ValueError("A single-channel RMS review needs source and channel identity")
+            epoch = windows.epoch_evidence
+            for item in (windows.event, windows.background, windows.counts_evidence, epoch.reference if epoch else None):
+                if item is not None and (item.source_hash, item.channel) != identity:
+                    raise ValueError("RMS windows and metadata must identify the selected source and channel")
+        elif self.mode != "paired":
+            raise ValueError("Unsupported review mode")
+        elif self.rms is not None:
+            raise ValueError("A paired review must have a null RMS payload")
+
         if len({blow.blow_id for blow in self.blows}) != len(self.blows):
             raise ValueError("Blow IDs must be unique")
         group_ids = {group.group_id for group in self.groups}
@@ -119,6 +141,16 @@ class ReviewState:
                     if record is None or record.confirmation.decision != replace(decision, evidence_id=None):
                         raise ValueError("Pick decision must match its linked raw evidence")
 
+    @classmethod
+    def for_single_channel(cls, source_hash: str, channel: str) -> ReviewState:
+        return cls((), mode="single-channel", rms=RmsReview(RmsWindows(source_hash, channel)))
+
+    @property
+    def single_channel_identity(self) -> tuple[str, str] | None:
+        if self.rms is None:
+            return None
+        return self.rms.windows.source_hash, self.rms.windows.channel
+
     def blow(self, blow_id: str) -> Blow:
         for blow in self.blows:
             if blow.blow_id == blow_id:
@@ -134,6 +166,40 @@ class ReviewState:
             span.segment_id == ref.segment_id and span.start <= ref.sample_index < span.stop
             for span in self.masks
         )
+
+
+def validate_single_channel_span(state: ReviewState, catalog: SourceCatalog, span: SampleSpan) -> None:
+    validate_span(catalog, span)
+    segment = catalog.segment(span.segment_id)
+    if (segment.source_hash, segment.channel) != state.single_channel_identity:
+        raise ValueError("Sample span is outside the selected single-channel recording")
+
+
+def validate_single_channel(catalog: SourceCatalog, state: ReviewState) -> None:
+    if len(catalog.sources) != 1 or not any(
+        (segment.source_hash, segment.channel) == state.single_channel_identity for segment in catalog.segments
+    ):
+        raise ValueError("A single-channel review must identify a channel in exactly one source")
+
+
+def set_rms_windows(state: ReviewState, catalog: SourceCatalog, windows: RmsWindows) -> ReviewState:
+    """Stage changed window intent and clear the previous human disposition."""
+    if state.rms is not None and state.rms.windows == windows:
+        return state
+    return set_rms_review(state, catalog, RmsReview(windows))
+
+
+def set_rms_review(state: ReviewState, catalog: SourceCatalog, review: RmsReview) -> ReviewState:
+    """Stage an explicit human disposition without carrying a historical baseline into the draft."""
+    validate_single_channel(catalog, state)
+    if state.single_channel_identity != (review.windows.source_hash, review.windows.channel):
+        raise ValueError("A review edit cannot switch its single-channel source or mode")
+    if review.method_version != RMS_METHOD:
+        raise ValueError("Unsupported RMS method version for a new review")
+    staged = replace(review, baseline=None)
+    if state.rms is not None and staged == replace(state.rms, baseline=None):
+        return state
+    return replace(state, rms=staged)
 
 
 def _validate_role(role: Role) -> None:
@@ -301,12 +367,17 @@ def _edit_intervals(
     catalog: SourceCatalog | None, reason: str | None,
 ) -> ReviewState:
     selection = _merge_spans(spans)
+    if state.rms is not None and (catalog is None or reason is None):
+        raise ValueError("A single-channel interval edit requires a catalog and a reason")
     if reason is not None or catalog is not None:
         if reason is None or catalog is None:
             raise ValueError("A reasoned interval edit requires a catalog and a reason")
         require_reason(reason, "An interval action")
         for span in selection:
-            validate_span(catalog, span)
+            if state.rms is not None:
+                validate_single_channel_span(state, catalog, span)
+            else:
+                validate_span(catalog, span)
 
     masks = _edit_masks(state.masks, selection, action)
     if masks == state.masks:
@@ -315,7 +386,10 @@ def _edit_intervals(
     if reason is not None:
         changed = _mask_delta(state.masks, masks, action)
         actions += (IntervalAction(action, changed, reason),)
-    return replace(state, masks=masks, interval_actions=actions)
+    rms = state.rms
+    if rms is not None:
+        rms = RmsReview(rms.windows, method_version=rms.method_version)
+    return replace(state, masks=masks, interval_actions=actions, rms=rms)
 
 
 def mask_spans(
@@ -392,6 +466,13 @@ class Revision:
 
 
 def _validate_transition(before: ReviewState, after: ReviewState) -> None:
+    if before.mode != after.mode or before.single_channel_identity != after.single_channel_identity:
+        raise ValueError("A review edit cannot switch its single-channel source or mode")
+    if after.rms is not None and after.masks != before.masks:
+        if after.rms.disposition != "candidate":
+            raise ValueError("Changed masks require a new RMS review")
+        if len(after.interval_actions) == len(before.interval_actions):
+            raise ValueError("A single-channel mask change requires a recorded interval action")
     if before.receivers != after.receivers or before.timing_evidence != after.timing_evidence:
         raise ValueError("A review edit cannot rewrite source or timing evidence")
     if len(after.groups) < len(before.groups):
@@ -424,8 +505,17 @@ def _validate_transition(before: ReviewState, after: ReviewState) -> None:
 
 
 def _validate_applied_revision(before: ReviewState | None, revision: Revision) -> None:
-    previous_records = before.raw_evidence if before is not None else ()
     state = revision.state
+    if state.rms is not None:
+        if before is None:
+            initial_rms = RmsReview(
+                RmsWindows(state.rms.windows.source_hash, state.rms.windows.channel), method_version=state.rms.method_version,
+            )
+            if state.rms != initial_rms or state.masks:
+                raise ValueError("The initial single-channel revision must be empty of RMS edits and masks")
+        elif state.rms.baseline is None:
+            raise ValueError("An applied single-channel revision requires an RMS baseline")
+    previous_records = before.raw_evidence if before is not None else ()
     if before is None and state.interval_actions:
         raise ValueError("The initial revision cannot contain recorded interval actions")
     if state.raw_evidence[:len(previous_records)] != previous_records:
@@ -510,6 +600,19 @@ class ReviewHistory:
         return self._cursor + 1 < len(self._revisions)
 
     def preview(self, state: ReviewState, reason: str) -> Revision:
+        previous, current = self.current.state.rms, state.rms
+        if (previous is not None and current is not None and current.disposition == "accepted"
+                and previous.windows != current.windows):
+            raise ValueError("Changed windows or metadata need an explicit RMS review before acceptance")
+        return self._preview(state, reason)
+
+    def preview_rms_review(self, state: ReviewState, reason: str) -> Revision:
+        """Stage a deliberate window disposition, including acceptance of newly reviewed support."""
+        if state.rms is None:
+            raise ValueError("An explicit RMS review requires a single-channel state")
+        return self._preview(state, reason)
+
+    def _preview(self, state: ReviewState, reason: str) -> Revision:
         _validate_transition(self.current.state, state)
         if state.raw_evidence != self.current.state.raw_evidence:
             raise ValueError("Raw evidence can only be captured at Apply")
@@ -522,7 +625,37 @@ class ReviewHistory:
         self._confirmed_draft = None
 
     def apply(self) -> Revision:
+        if self._draft is not None and self._draft.state.rms is not None:
+            raise ValueError("Use apply_rms to apply single-channel edits")
         return self._apply(self._draft)
+
+    def apply_rms(self, catalog: SourceCatalog, *, checked_evidence: Iterable[RmsEvidence] = ()) -> Revision:
+        """Capture the applied numerics independently of the staged human disposition."""
+        draft = self._draft
+        if draft is None:
+            return self.current
+        state = draft.state
+        review = state.rms
+        if review is None:
+            raise ValueError("RMS apply requires a single-channel draft")
+        if state == self.current.state:
+            return self._apply(draft)
+        if review.method_version != RMS_METHOD:
+            raise ValueError("Unsupported RMS method version for a new review")
+        validate_single_channel(catalog, state)
+        for span in state.masks:
+            validate_single_channel_span(state, catalog, span)
+        result = measure_review(catalog, state, review.windows, checked_evidence=checked_evidence)
+        state = replace(state, rms=replace(review, baseline=result))
+        return self._apply(replace(draft, state=state))
+
+    def replay_rms(self, catalog: SourceCatalog, *, checked_evidence: Iterable[RmsEvidence] = ()) -> RmsReplay:
+        """Recompute the current single-channel revision without editing its baseline."""
+        state = self.current.state
+        if state.rms is None:
+            raise ValueError("RMS replay requires a single-channel review")
+        validate_single_channel(catalog, state)
+        return inspect_rms_review(catalog, state, state.rms, checked_evidence=checked_evidence)
 
     def confirm_current_pick_evidence(
         self, catalog: SourceCatalog, decision: PickDecision, view: RawEvidenceView,
