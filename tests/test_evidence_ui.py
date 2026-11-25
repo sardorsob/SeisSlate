@@ -1,5 +1,6 @@
 """Exercise confirmation and Apply through the Qt raw evidence dock."""
 
+import csv
 import json
 from importlib.util import find_spec
 from pathlib import Path
@@ -18,7 +19,7 @@ class EvidenceWorkbenchTest(TestCase):
     def test_apply_uses_the_displayed_raw_span_and_recovers_from_failed_capture(self):
         from PyQt5.QtCore import Qt
         from PyQt5.QtTest import QTest
-        from PyQt5.QtWidgets import QApplication, QFileDialog
+        from PyQt5.QtWidgets import QApplication, QFileDialog, QScrollArea
 
         from seisslate.example import load_example
         from seisslate.review import mask_spans, restore_spans
@@ -39,6 +40,7 @@ class EvidenceWorkbenchTest(TestCase):
                 QApplication.processEvents()
 
             workbench.select_blow("B01")
+            baseline_fit = workbench.result.reviewed
             activate("raw_review")
             self.assertTrue(workbench.raw_view.isVisible())
             self.assertIn("processing not recorded", workbench.source_label.text())
@@ -62,6 +64,8 @@ class EvidenceWorkbenchTest(TestCase):
             activate("confirm_raw_review")
             draft = history.draft
             self.assertIsNotNone(draft)
+            self.assertFalse(workbench.export_action.isEnabled())
+            self.assertFalse(workbench.export_evidence_action.isEnabled())
             self.assertEqual(draft.state.raw_evidence, ())
             self.assertIs(history.current, initial)
             workbench.select_blow("B02")
@@ -98,6 +102,20 @@ class EvidenceWorkbenchTest(TestCase):
             self.assertIs(workbench.raw_view.view, confirmed_view)
             activate("apply")
             applied = history.current
+            self.assertEqual(workbench.result.reviewed, baseline_fit)
+            self.assertIn("Attestation current", workbench.details.text())
+            self.assertIn("Observed lag", workbench.details.text())
+            self.assertIn("Residual", workbench.details.text())
+            self.assertIn("Fit requested yes", workbench.details.text())
+            self.assertIn("effective yes", workbench.details.text())
+            self.assertIn("Original sample 360", workbench.evidence_origin.text())
+            self.assertIn("Reviewed sample 360", workbench.evidence_origin.text())
+            self.assertIn("zero width", workbench.evidence_origin.text())
+            self.assertIn(source.source_hash, workbench.evidence_provenance.text())
+            workbench.window.resize(1240, 900)
+            QApplication.processEvents()
+            scroll = workbench.evidence_dock.findChild(QScrollArea)
+            self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
             (record,) = applied.state.raw_evidence
             (decision,) = applied.state.pick_decisions
             self.assertEqual(applied.revision_id, record.applied_revision_id)
@@ -148,6 +166,30 @@ class EvidenceWorkbenchTest(TestCase):
                 self.assertIn("raw samples match", summary)
                 self.assertIn("View restored", summary)
 
+                file_menu = next(action.menu() for action in workbench.window.menuBar().actions()
+                                 if action.text() == "&File")
+                self.assertIn(workbench.export_evidence_action, file_menu.actions())
+                self.assertEqual(workbench.export_evidence_action.text(), "Export evidence CSV…")
+                session_bytes = path.read_bytes()
+                for action, filename in ((workbench.export_action, "fit.csv"),
+                                         (workbench.export_evidence_action, "evidence.csv")):
+                    with patch.object(QFileDialog, "getSaveFileName", return_value=(str(path), "")):
+                        action.trigger()
+                    self.assertIn("active review session", workbench.status.text().lower())
+                    self.assertEqual(path.read_bytes(), session_bytes)
+                    destination = Path(directory) / filename
+                    with patch.object(QFileDialog, "getSaveFileName", return_value=(str(destination), "")):
+                        action.trigger()
+                    self.assertTrue(destination.is_file(), workbench.status.text())
+                with (Path(directory) / "fit.csv").open(newline="", encoding="utf-8") as file:
+                    self.assertNotIn("decision_status", next(csv.DictReader(file)))
+                with (Path(directory) / "evidence.csv").open(newline="", encoding="utf-8") as file:
+                    accepted = next(csv.DictReader(file))
+                self.assertEqual((accepted["blow_id"], accepted["role"]), ("B01", "original"))
+                self.assertEqual(accepted["decision_status"], "accepted")
+                self.assertEqual(accepted["raw_samples"], "raw_samples_match")
+                self.assertEqual(accepted["attestation_current"], "false")
+
         launch_workbench((catalog, history), check=exercise)
 
     def test_missing_arrival_can_be_previewed_and_cancelled_or_recorded_with_its_reason(self):
@@ -167,7 +209,8 @@ class EvidenceWorkbenchTest(TestCase):
                 QTest.mouseClick(button, Qt.LeftButton)
 
             workbench.select_blow("B07")
-            click("raw_review")
+            click("mark_unresolved")
+            self.assertEqual(workbench.evidence_status.currentData(), "unresolved")
             workbench.evidence_intended.setText("2000-01-01T00:00:02.175000000Z")
             click("show_raw_span")
             self.assertIsNone(workbench.raw_view.view)
@@ -264,5 +307,74 @@ class EvidenceWorkbenchTest(TestCase):
             self.assertFalse(workbench.evidence_dock.isVisible())
             self.assertIsNone(workbench.raw_view.view)
             self.assertIn("Applied revision", workbench.status.text())
+
+        launch_workbench((catalog, history), check=exercise)
+
+    def test_blow_queue_visits_affected_receivers_and_preserves_pair_failures(self):
+        from dataclasses import replace
+
+        from seisslate.evidence import PickDecision, RawEvidenceView
+        from seisslate.example import load_example
+        from seisslate.review import ReviewHistory, mask_spans, set_pair_status, set_pick_decision
+        from seisslate.sources import SampleSpan
+        from seisslate.ui import launch_workbench
+
+        catalog, original = load_example()
+        selected_ids = {"B01", "B02", "B03", "B04", "B07", "B08"}
+        state = original.current.state
+        history = ReviewHistory(replace(state, blows=tuple(blow for blow in state.blows if blow.blow_id in selected_ids)))
+        stale_span = None
+        for blow in history.current.state.blows:
+            for role in ("original", "calibration"):
+                point = getattr(blow, role).reviewed_ref
+                if point is None or blow.blow_id == "B03":
+                    continue
+                segment = catalog.segment(point)
+                span = SampleSpan(point.segment_id, point.sample_index - 1, point.sample_index + 1)
+                view = RawEvidenceView(point.source_hash, point.channel, span, segment.time_ns(span.start),
+                                       segment.time_ns(span.stop), point, None)
+                status = "candidate" if (blow.blow_id, role) == ("B08", "calibration") else "accepted"
+                decision = PickDecision(blow.blow_id, role, point, status, reason="Clear arrival",
+                                        reviewer="Reviewer", inspection_span=span)
+                history.preview(set_pick_decision(history.current.state, catalog, decision), "Review pick")
+                confirmation = history.confirm_current_pick_evidence(catalog, decision, view)
+                history.apply_with_evidence(catalog, confirmation, view, captured_utc_ns=1,
+                                            software_versions=(("SeisSlate", "test"),))
+                if (blow.blow_id, role) == ("B02", "calibration"):
+                    stale_span = SampleSpan(span.segment_id, span.start, span.start + 1)
+        state = set_pair_status(history.current.state, "B04", "ambiguous", "Pairing needs review")
+        self.assertIsNotNone(stale_span)
+        state = mask_spans(state, (stale_span,), catalog=catalog, reason="Changed support near onset")
+        history.preview(state, "Apply review changes")
+        applied = history.apply()
+
+        def exercise(workbench):
+            workbench.unresolved_filter.setCurrentIndex(workbench.unresolved_filter.findData("blows"))
+            workbench.select_blow("B01")
+            for expected in (("B02", "calibration"), ("B03", "original"), ("B03", "calibration"),
+                             ("B04", "original"), ("B07", "original"), ("B08", "calibration"),
+                             ("B02", "calibration")):
+                workbench.buttons["next_unresolved"].click()
+                self.assertEqual((workbench.selected_blow_id, workbench.role.currentData()), expected)
+            workbench.buttons["previous_unresolved"].click()
+            self.assertEqual((workbench.selected_blow_id, workbench.role.currentData()), ("B08", "calibration"))
+            self.assertIs(history.current, applied)
+            self.assertIsNone(history.draft)
+
+            baseline_fit = workbench.result.reviewed
+            workbench.buttons["raw_review"].click()
+            self.assertEqual(workbench.evidence_status.currentData(), "candidate")
+            workbench.evidence_status.setCurrentIndex(workbench.evidence_status.findData("accepted"))
+            workbench.evidence_reviewer.setText("Reviewer")
+            workbench.reason.setText("Confirmed candidate against original samples")
+            workbench.buttons["confirm_raw_review"].click()
+            self.assertIsNotNone(history.draft)
+            workbench.buttons["apply"].click()
+            self.assertIsNone(history.draft)
+            self.assertIn("Historical decision accepted", workbench.evidence_summary.text())
+            self.assertEqual(workbench.result.reviewed, baseline_fit)
+            workbench.buttons["next_unresolved"].click()
+            workbench.buttons["previous_unresolved"].click()
+            self.assertEqual((workbench.selected_blow_id, workbench.role.currentData()), ("B07", "original"))
 
         launch_workbench((catalog, history), check=exercise)

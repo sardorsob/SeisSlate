@@ -8,6 +8,8 @@ The pilot uses Pyrocko Snuffler for waveform navigation and selection. The check
 
 Import a hammer-group CSV to navigate approximate strike windows and check receiver coverage and metadata before making picks. [Group review and CSV format](docs/pilot-validation.md#hammer-group-review)
 
+Review a pick against its raw samples, record onset bounds and a reason, then save the applied decision and its evidence in a version 3 session. Export the evidence separately from the fit. [Raw pick review and replay](docs/pilot-validation.md#raw-pick-evidence)
+
 The example includes closely spaced strikes, a deliberately mistimed pick, and an arrival missing because of a recording gap. The fit relates signed distance difference in metres to signed arrival delay in seconds, both calculated as original minus calibration. The two imported reference fits use all available pairs and the strict interval `−0.06 < delay < 0.08` seconds. Subsequent review edits leave that baseline fixed. The displayed slope describes the numerical fit. Interpreting field velocity requires evidence about blow pairing, clocks and geometry. [Baseline table](fixtures/synthetic/baseline.csv) · [Fixture manifest](fixtures/synthetic/expected.json)
 
 ## Install the desktop pilot

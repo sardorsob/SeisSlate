@@ -19,7 +19,7 @@ from pyrocko.gui.snuffler.snuffling import Snuffling
 from pyrocko.trace import Trace
 
 from .analysis import Analysis, analyze
-from .evidence import PickDecision, RawConfirmation, RawEvidenceView
+from .evidence import PickDecision, RawConfirmation, RawEvidenceView, require_reason
 from .example import load_example
 from .groups import GroupWindow, inspect_group, load_group_csv
 from .raw_view import RAW_ORDINATE_SCALE, RawView
@@ -28,7 +28,7 @@ from .review import (
     move_pick, nudge_pick, restore_spans, set_geometry, set_inclusion,
     set_group_reviewed, set_pair_status, set_pick_decision,
 )
-from .sources import NS_PER_SECOND, SampleSpan, Segment, SourceCatalog, load_source, utc_ns
+from .sources import NS_PER_SECOND, SampleRef, SampleSpan, Segment, SourceCatalog, load_source, utc_ns
 
 
 ROLES: tuple[Role, Role] = ("original", "calibration")
@@ -122,6 +122,9 @@ class Workbench(qc.QObject):
             action = toolbar.addAction(label)
             action.triggered.connect(self.wrap(method))
             setattr(self, name, action)
+        file_menu.addSeparator()
+        self.export_evidence_action = file_menu.addAction("Export evidence CSV…")
+        self.export_evidence_action.triggered.connect(self.wrap(self.export_evidence_review))
         self.open_pair_action.setShortcut(qg.QKeySequence.Open)
         self.save_action.setShortcut(qg.QKeySequence.Save)
 
@@ -183,6 +186,7 @@ class Workbench(qc.QObject):
         self.details = qw.QLabel()
         self.details.setTextFormat(qc.Qt.PlainText)
         self.details.setWordWrap(True)
+        self.details.setTextInteractionFlags(qc.Qt.TextSelectableByMouse | qc.Qt.TextSelectableByKeyboard)
         layout.addWidget(self.details)
         self.role = qw.QComboBox()
         for role in (*ROLES, "both"):
@@ -203,7 +207,8 @@ class Workbench(qc.QObject):
         self.button(row, "add", "Add blow…", self.new_blow)
         self.button(row, "geometry", "Distances…", self.change_geometry)
         self.button(row, "pairing", "Pair status…", self.change_pairing)
-        self.button(row, "raw_review", "Review raw &evidence", self.open_raw_review)
+        self.button(row, "raw_review", "Review &now", self.open_raw_review)
+        self.button(row, "mark_unresolved", "Mark &unresolved", self.mark_unresolved)
         layout.addLayout(row)
 
         self.reason = qw.QLineEdit()
@@ -272,20 +277,29 @@ class Workbench(qc.QObject):
         grid.addWidget(status_label, 2, 2)
         grid.addWidget(self.evidence_status, 2, 3)
         layout.addLayout(grid)
-        row = qw.QHBoxLayout()
-        self.button(row, "show_raw_span", "&Show raw span", self.show_raw_span)
-        self.button(row, "confirm_raw_review", "&Confirm review", self.confirm_raw_review)
-        row.addStretch()
-        layout.addLayout(row)
-        layout.addWidget(self.evidence_notice)
+        self.evidence_provenance = qw.QLabel()
+        self.evidence_provenance.setTextFormat(qc.Qt.PlainText)
+        self.evidence_provenance.setWordWrap(True)
+        self.evidence_provenance.setSizePolicy(qw.QSizePolicy.Ignored, qw.QSizePolicy.Preferred)
+        self.evidence_provenance.setTextInteractionFlags(qc.Qt.TextSelectableByMouse | qc.Qt.TextSelectableByKeyboard)
+        layout.addWidget(self.evidence_provenance)
         scroll = qw.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(qw.QFrame.NoFrame)
         scroll.setMinimumHeight(170)
         scroll.setWidget(panel)
+        dock_panel = qw.QWidget()
+        dock_layout = qw.QVBoxLayout(dock_panel)
+        dock_layout.setContentsMargins(0, 0, 0, 0)
+        dock_layout.addWidget(scroll)
+        row = qw.QHBoxLayout()
+        self.button(row, "show_raw_span", "&Show raw span", self.show_raw_span)
+        self.button(row, "confirm_raw_review", "&Confirm review", self.confirm_raw_review)
+        row.addWidget(self.evidence_notice, 1)
+        dock_layout.addLayout(row)
         self.window.setCorner(qc.Qt.BottomRightCorner, qc.Qt.RightDockWidgetArea)
-        self.window.add_panel("Raw pick evidence", scroll, where=qc.Qt.BottomDockWidgetArea)
-        self.evidence_dock = scroll.parentWidget()
+        self.window.add_panel("Raw pick evidence", dock_panel, where=qc.Qt.BottomDockWidgetArea)
+        self.evidence_dock = dock_panel.parentWidget()
         self.close_raw_review()
 
     def close_raw_review(self):
@@ -315,7 +329,7 @@ class Workbench(qc.QObject):
         blow, role = self.require_blow(), self.role_for_pick()
         self._evidence_target = blow.blow_id, role
         point = getattr(blow, role).reviewed_ref
-        decision = self._applied_pick_decision()
+        decision = self._pick_decision(self._evidence_target)
         span = decision.inspection_span if decision is not None else None
         intended = decision.intended_utc_ns if decision is not None else getattr(blow, role).imported_ns
         self.evidence_intended.setVisible(point is None)
@@ -349,8 +363,14 @@ class Workbench(qc.QObject):
             self.evidence_notice.setText("Enter the intended UTC for this unresolved arrival.")
             self.evidence_intended.setFocus()
 
-    def _applied_pick_decision(self) -> PickDecision | None:
-        return next((item for item in self.state().pick_decisions if item.target == self._evidence_target), None)
+    def mark_unresolved(self):
+        if self.history.draft is not None:
+            raise ValueError("Apply or cancel the active preview first.")
+        self.open_raw_review()
+        self.evidence_status.setCurrentIndex(self.evidence_status.findData("unresolved"))
+
+    def _pick_decision(self, target: tuple[str, Role] | None) -> PickDecision | None:
+        return next((item for item in self.state().pick_decisions if item.target == target), None)
 
     def show_raw_span(self):
         if self._evidence_target is None:
@@ -452,14 +472,37 @@ class Workbench(qc.QObject):
 
     def describe_evidence(self):
         if self._evidence_target is None:
-            self.evidence_origin.setText("Choose a blow and receiver, then open Review raw evidence.")
+            self.evidence_origin.setText("Choose a blow and receiver, then select Review now.")
             self.evidence_summary.clear()
+            self.evidence_provenance.clear()
             return
         blow_id, role = self._evidence_target
-        point = getattr(self.state().blow(blow_id), role).reviewed_ref
-        location = f"Sample {point.sample_index} · {_utc(self.catalog.time_ns(point))}" if point else "No reviewed point"
-        self.evidence_origin.setText(f"{blow_id} · {role.capitalize()} · {self.receivers[role].channel} · {location}")
-        decision = self._applied_pick_decision()
+        blow = self.state().blow(blow_id)
+        pick = getattr(blow, role)
+        decision = self._pick_decision(self._evidence_target)
+        imported = _utc(pick.imported_ns) if pick.imported_ns is not None else NOT_AVAILABLE
+        lines = [f"{blow_id} · {role.capitalize()} · {self.receivers[role].channel}", f"Imported UTC {imported}"]
+        if pick.original_ref is not None and pick.original_ref == pick.reviewed_ref:
+            ref = pick.original_ref
+            timestamp = self.catalog.time_ns(ref)
+            samples = f"Original sample {ref.sample_index} · Reviewed sample {ref.sample_index}"
+            if timestamp == pick.imported_ns:
+                lines.append(f"{samples} · At imported UTC")
+            else:
+                lines.extend((samples, f"Sample UTC {_utc(timestamp)}"))
+        else:
+            lines += [f"Original {self._sample_text(pick.original_ref)}",
+                      f"Reviewed {self._sample_text(pick.reviewed_ref)}"]
+        if decision is not None:
+            if decision.intended_utc_ns is not None:
+                lines.append(f"Intended UTC {_utc(decision.intended_utc_ns)}")
+            if decision.lower_ref is not None:
+                lower, upper = decision.lower_ref, decision.upper_ref
+                bounds = self._sample_text(lower)
+                bounds += " (zero width)" if lower == upper else f" to {self._sample_text(upper)}"
+                lines.append(f"Plausible onset bounds, inclusive · {bounds}")
+        self.evidence_origin.setText("\n".join(lines))
+        self._describe_pick_provenance(blow, pick, decision)
         if decision is None:
             self.evidence_summary.setText("Decision legacy-unassessed. Raw evidence not recorded.")
             return
@@ -485,6 +528,36 @@ class Workbench(qc.QObject):
         if replay.masks_changed:
             details.append("Mask changed within recorded support. Confirm a new raw review.")
         self.evidence_summary.setText(" · ".join(details))
+
+    def _sample_text(self, ref: SampleRef | None) -> str:
+        if ref is None:
+            return "sample unavailable"
+        return f"sample {ref.sample_index} · {_utc(self.catalog.time_ns(ref))}"
+
+    def _describe_pick_provenance(self, blow: Blow, pick: Pick, decision: PickDecision | None) -> None:
+        lines = []
+        if blow.reason:
+            lines.append(f"Fit inclusion reason · {blow.reason}")
+        if blow.pair_reason:
+            lines.append(f"Pairing reason · {blow.pair_reason}")
+        identities: dict[tuple[str, str, str], list[str]] = {}
+        for label, ref in (("Original", pick.original_ref), ("Reviewed", pick.reviewed_ref)):
+            if ref is not None:
+                identities.setdefault((ref.source_hash, ref.channel, ref.segment_id), []).append(label)
+        for (source, channel, segment), labels in identities.items():
+            label = " and ".join(labels)
+            lines.append(f"{label} · Source SHA-256 {source} · Channel {channel} · Segment {segment}")
+        if decision is not None and decision.evidence_id is not None:
+            record = next(item for item in self.state().raw_evidence if item.evidence_id == decision.evidence_id)
+            view = record.confirmation.view
+            if (view.source_hash, view.channel, view.span.segment_id) not in identities:
+                lines.append(f"Capture source SHA-256 {view.source_hash} · Channel {view.channel} · "
+                             f"Segment {view.span.segment_id}")
+            releases = " · ".join(f"{name} {release}" for name, release in record.software_versions)
+            lines.append(f"{record.method_id} · Revision {record.applied_revision_id} · "
+                         f"Captured {_utc(record.captured_utc_ns)}\n{releases}")
+        self.evidence_provenance.setText("\n".join(lines))
+        self.evidence_provenance.setVisible(bool(lines))
 
     def create_group_panel(self):
         panel = qw.QWidget()
@@ -691,10 +764,20 @@ class Workbench(qc.QObject):
     def export_review(self):
         from .session import export_csv
 
-        name, _ = qw.QFileDialog.getSaveFileName(self.window, "Export applied review", "review.csv", "CSV (*.csv)")
+        self._export_csv(export_csv, "Export applied review", "review.csv")
+
+    def export_evidence_review(self):
+        from .session import export_evidence_csv
+
+        self._export_csv(export_evidence_csv, "Export applied pick evidence", "review-evidence.csv")
+
+    def _export_csv(self, writer, title: str, default_name: str) -> None:
+        if self.history.draft is not None:
+            raise ValueError("Apply or cancel the preview before exporting.")
+        name, _ = qw.QFileDialog.getSaveFileName(self.window, title, default_name, "CSV (*.csv)")
         if name:
             path = Path(name)
-            export_csv(path, self.catalog, self.history)
+            writer(path, self.catalog, self.history, session_path=self.session_path)
             self.status.setText(f"Exported {path.name}")
 
     def overview(self):
@@ -939,32 +1022,70 @@ class Workbench(qc.QObject):
             self.new_blow(group_id=group.group_id)
 
     def unresolved(self, step):
-        groups_mode = self.unresolved_filter.currentData() == "groups"
-        self.review_tabs.setCurrentIndex(1 if groups_mode else 0)
-        if groups_mode:
-            ordered = [self.group_table.item(row, 0).text() for row in range(self.group_table.rowCount())]
-            unresolved = {group.group_id for group in self.group_state().groups if not group.reviewed}
-            selected = self.selected_group_id
-            kind = "hammer groups"
-        else:
-            observations = self.result.reviewed.observations
-            ordered = [row.blow_id for row in observations]
-            unresolved = {row.blow_id for row in observations if row.status not in ("valid", "excluded")}
-            selected = self.selected_blow_id
-            kind = "blows"
-        if not unresolved:
-            self.status.setText(f"No unresolved {kind}.")
+        if self.unresolved_filter.currentData() == "blows":
+            if self._raw_draft is not None:
+                self.status.setText(f"Preview • {self._raw_draft.reason}. Apply or Cancel before changing picks.")
+                return
+            self.review_tabs.setCurrentIndex(0)
+            self.unresolved_blow(step)
             return
+
+        self.review_tabs.setCurrentIndex(1)
+        ordered = [self.group_table.item(row, 0).text() for row in range(self.group_table.rowCount())]
+        unresolved = {group.group_id for group in self.group_state().groups if not group.reviewed}
+        if not unresolved:
+            self.status.setText("No unresolved hammer groups.")
+            return
+        selected = self.selected_group_id
         order = ordered if step > 0 else ordered[::-1]
         start = order.index(selected) + 1 if selected in order else 0
         target = next(item for item in order[start:] + order[:start] if item in unresolved)
-        if groups_mode:
-            self.group_table.setCurrentCell(ordered.index(target), 0)
-            self.zoom_to_group()
-        else:
-            self.select_blow(target)
+        self.group_table.setCurrentCell(ordered.index(target), 0)
+        self.zoom_to_group()
         if target == selected:
             self.status.setText(f"{self.status.text()} · {target} is the only unresolved entry.")
+
+    def unresolved_blow(self, step):
+        observations = self.result.reviewed.observations
+        order = [(row.blow_id, role) for row in observations for role in ROLES]
+        if step < 0:
+            order.reverse()
+        selected = self.selected_blow_id, self.role.currentData()
+        if selected in order:
+            start = order.index(selected) + 1
+        else:
+            start = next((index for index, (blow_id, _) in enumerate(order) if blow_id == selected[0]), 0)
+        numeric = {
+            row.blow_id: self._fit_issue_roles(self.state().blow(row.blow_id))
+            for row in observations if row.status not in ("valid", "excluded")
+        }
+        for blow_id, role in order[start:] + order[:start]:
+            decision = self._pick_decision((blow_id, role))
+            if (role in numeric.get(blow_id, ()) or decision is None or decision.status != "accepted"
+                    or not self.history.replay_pick_evidence(self.catalog, blow_id, role).attestation_current):
+                self.select_blow(blow_id, role=role)
+                if (blow_id, role) == selected:
+                    self.status.setText(f"{self.status.text()} · {blow_id} {role.capitalize()} is the only unresolved pick.")
+                return
+        self.status.setText("No unresolved blows.")
+
+    def _fit_issue_roles(self, blow: Blow) -> tuple[Role, ...]:
+        if blow.pair_status != "confirmed":
+            return ("original",)
+        issues = []
+        for role in ROLES:
+            receiver = self.receivers[role]
+            ref = getattr(blow, role).reviewed_ref
+            if (ref is None or ref.channel != receiver.channel
+                    or (receiver.source_hash and ref.source_hash != receiver.source_hash)
+                    or self.state().is_masked(ref)):
+                issues.append(role)
+                continue
+            try:
+                self.catalog.segment(ref)
+            except ValueError:
+                issues.append(role)
+        return tuple(issues) or ("original",)
 
     def update_controls(self):
         if self._active is None:
@@ -972,6 +1093,7 @@ class Workbench(qc.QObject):
                 button.setEnabled(False)
             self.save_action.setEnabled(False)
             self.export_action.setEnabled(False)
+            self.export_evidence_action.setEnabled(False)
             return
         draft = self.history.draft
         pending = draft is not None
@@ -988,6 +1110,7 @@ class Workbench(qc.QObject):
         self.buttons["raw_review"].setEnabled(evidence_pending or (
             selected and not pending and self.role.currentData() in ROLES
         ))
+        self.buttons["mark_unresolved"].setEnabled(selected and not pending and self.role.currentData() in ROLES)
         can_edit_evidence = self._evidence_target is not None and (not pending or evidence_pending)
         for key in ("show_raw_span", "confirm_raw_review"):
             self.buttons[key].setEnabled(can_edit_evidence)
@@ -1005,6 +1128,7 @@ class Workbench(qc.QObject):
         self.buttons["redo"].setEnabled(not pending and self.history.can_redo)
         self.save_action.setEnabled(not pending)
         self.export_action.setEnabled(not pending)
+        self.export_evidence_action.setEnabled(not pending)
         if draft is not None:
             suffix = "Apply or Cancel." if evidence_pending else "Blow table and fit show the applied revision."
             self.status.setText(f"Preview • {draft.reason}. {suffix}")
@@ -1035,28 +1159,50 @@ class Workbench(qc.QObject):
         blow = self.selected_blow()
         if blow is None:
             self.details.setText("Select a blow in the table or on the fit plot.")
+            self.details.setToolTip("")
             return
-        observations = self.result.reviewed.observations
-        row = next(row for row in observations if row.blow_id == blow.blow_id)
-        descriptions = []
+        row = next(row for row in self.result.reviewed.observations if row.blow_id == blow.blow_id)
+        if row.lag_ns is None:
+            lag = NOT_AVAILABLE
+        else:
+            whole_ms, fraction_ns = divmod(abs(row.lag_ns), 1_000_000)
+            lag = f"{'-' if row.lag_ns < 0 else ''}{whole_ms}.{fraction_ns:06d} ms"
+        residual = f"{row.residual_m:.3f} m" if row.residual_m is not None else NOT_AVAILABLE
+        requested = "yes" if row.requested_included else "no"
+        effective = "yes" if row.effective_included else "no"
+        details = [f"{blow.blow_id} · Observed lag {lag} · Residual {residual}",
+                   f"Fit requested {requested} · effective {effective} · {row.status.replace('_', ' ')}"]
+        dispositions = []
         for role in ROLES:
-            pick = getattr(blow, role)
-            ref = pick.reviewed_ref
-            descriptions.append(f"{role.capitalize()} sample {ref.sample_index}" if ref else f"{role.capitalize()} unresolved")
+            decision = self._pick_decision((blow.blow_id, role))
+            if decision is None:
+                disposition = "legacy-unassessed"
+            elif decision.evidence_id is None:
+                disposition = f"{decision.status} · Evidence unavailable"
+            else:
+                replay = self.history.replay_pick_evidence(self.catalog, blow.blow_id, role)
+                status = "Attestation current" if replay.attestation_current else "Attestation stale or unavailable"
+                disposition = f"{decision.status} · {status}"
+            dispositions.append(f"{role.capitalize()} {disposition}")
+        details.append(" · ".join(dispositions))
         if blow.group_id is not None:
             group = next(group for group in self.state().groups if group.group_id == blow.group_id)
-            descriptions.append(f"Group {group.group_id}")
+            details.append(f"Group {group.group_id}")
             if any((time := self.pick_time(getattr(blow, role))) is not None
                    and not (group.start_ns <= time < group.stop_ns) for role in ROLES):
-                descriptions.append("An arrival is outside the group window.")
-        self.details.setText("  ·  ".join((blow.blow_id, *descriptions, row.reason)).rstrip(" ·"))
+                details.append("An arrival is outside the group window.")
+        self.details.setText("\n".join(details))
+        self.details.setToolTip(row.reason)
 
-    def select_blow(self, blow_id, *, zoom=True):
+    def select_blow(self, blow_id, *, zoom=True, role: Role | None = None):
         if self._raw_draft is not None and blow_id != self.selected_blow_id:
             return
         if not any(blow.blow_id == blow_id for blow in self.state().blows):
             return
         self.selected_blow_id = blow_id
+        if role is not None:
+            with qc.QSignalBlocker(self.role):
+                self.role.setCurrentIndex(self.role.findData(role))
         self.fill_rows()
         self.draw_results()
         self.render_markers()
@@ -1118,10 +1264,11 @@ class Workbench(qc.QObject):
             raise ValueError("Select Original or Calibration for a pick edit.")
         return role
 
-    def preview(self, state, reason):
+    def preview(self, state, reason, *, use_edit_reason=True):
         if self._raw_draft is not None:
             raise ValueError("Apply or cancel the raw review preview first.")
-        self.history.preview(state, self.reason.text().strip() or reason)
+        entered = self.reason.text().strip() if use_edit_reason else ""
+        self.history.preview(state, entered or reason)
         self.render_markers()
         if state.groups != self.state().groups:
             self.fill_group_rows()
@@ -1219,15 +1366,21 @@ class Workbench(qc.QObject):
         if not spans:
             raise ValueError("The selection contains no samples on the chosen receiver scope.")
         edit = restore_spans if restore else mask_spans
-        self.preview(edit(self.state(), spans), f"{'Restored' if restore else 'Masked'} interval on {scope}")
+        entered = self.reason.text().strip()
+        require_reason(entered, "A restore" if restore else "A mask")
+        state = edit(self.state(), spans, catalog=self.catalog, reason=entered)
+        self.preview(state, f"{'Restored' if restore else 'Masked'} interval on {scope}", use_edit_reason=False)
         self.viewer.remove_marker(marker)
 
     def toggle_inclusion(self):
         blow = self.require_blow()
         included = not blow.included
-        reason = self.reason.text().strip() or ("Included by reviewer" if included else "Omitted by reviewer")
-        self.preview(set_inclusion(self.state(), blow.blow_id, included, reason),
-                     f"{blow.blow_id} {reason.lower()}")
+        reason = self.reason.text().strip()
+        if not included:
+            require_reason(reason, "A fit exclusion")
+        state = set_inclusion(self.state(), blow.blow_id, included, reason or "Included by reviewer")
+        summary = f"Included {blow.blow_id} in fit" if included else f"Excluded {blow.blow_id} from fit"
+        self.preview(state, summary, use_edit_reason=False)
 
     def new_blow(self, *, group_id=None):
         title = "Add blow" if group_id is None else f"Add blow to group {group_id}"
