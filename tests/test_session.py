@@ -318,6 +318,171 @@ print(json.dumps([
         self.assertEqual((missing["lag_ns"], missing["residual_m"]), ("", ""))
         self.assertEqual(missing["status"], "missing")
 
+    def test_evidence_csv_reports_applied_targets_and_separates_staleness_from_raw_match(self):
+        from seisslate.evidence import PickDecision
+        from seisslate.review import mask_spans, set_pick_decision
+        from seisslate.sources import SampleSpan
+
+        captured = self.apply_evidence()
+        record = captured.state.raw_evidence[0]
+        segment = self.catalog.segment(record.confirmation.view.span.segment_id)
+        stale = mask_spans(
+            captured.state, (SampleSpan(segment.segment_id, 359, 360),),
+            catalog=self.catalog, reason="Nearby artefact",
+        )
+        unresolved = PickDecision(
+            "B07", "original", None, "unresolved", intended_utc_ns=segment.stop_ns,
+            reason=" =1+1", reviewer="\t=unknown",
+        )
+        state = set_pick_decision(stale, self.catalog, unresolved)
+        self.history.preview(state, "Record a gap and mask")
+        exported = self.folder / "evidence.csv"
+
+        def rows():
+            self.api.export_evidence_csv(exported, self.catalog, self.history)
+            with exported.open(newline="", encoding="utf-8") as file:
+                return {(row["blow_id"], row["role"]): row for row in csv.DictReader(file)}
+
+        draft_rows = rows()
+        self.assertEqual(draft_rows[("B07", "original")]["decision_status"], "legacy-unassessed")
+        self.assertEqual(draft_rows[("B01", "original")]["attestation_current"], "true")
+        self.history.apply()
+        applied = rows()
+        row = applied[("B01", "original")]
+        self.assertEqual((row["revision_id"], row["evidence_revision_id"], row["evidence_id"]), ("2", "1", "raw-1"))
+        self.assertEqual((row["decision_status"], row["decision_reason"], row["reviewer"]),
+                         ("accepted", "Clear onset", "Reviewer é"))
+        self.assertEqual((row["imported_utc_ns"], row["original_sample_utc_ns"], row["reviewed_sample_utc_ns"]),
+                         ("946684800360000000",) * 3)
+        self.assertEqual((row["original_sample_index"], row["reviewed_sample_index"]), ("360", "360"))
+        self.assertEqual(row["reviewed_source_hash"], self.catalog.sources[0].sha256)
+        self.assertEqual(row["reviewed_segment_id"], segment.segment_id)
+        self.assertEqual(row["reviewed_channel"], segment.channel)
+        self.assertEqual((row["lower_bound_sample_index"], row["upper_bound_sample_index"]), ("359", "361"))
+        self.assertEqual((row["lower_bound_utc_ns"], row["upper_bound_utc_ns"]),
+                         ("946684800359000000", "946684800361000000"))
+        self.assertEqual((row["evidence_method_id"], row["evidence_span_start"], row["evidence_span_stop_exclusive"]),
+                         ("raw-v1", "355", "366"))
+        self.assertEqual(row["evidence_raw_digest"], record.confirmation.samples.digest)
+        self.assertEqual((row["source_identity"], row["raw_samples"], row["grid_matches"]),
+                         ("source_match", "raw_samples_match", "true"))
+        self.assertEqual((row["recorded_view_valid"], row["view_restoration"], row["mask_stale"],
+                          row["attestation_current"]), ("true", "not_checked", "true", "false"))
+        self.assertEqual(applied[("B01", "calibration")]["decision_status"], "legacy-unassessed")
+        gap = applied[("B07", "original")]
+        self.assertEqual((gap["reviewed_sample_index"], gap["evidence_id"], gap["attestation_current"]), ("", "", ""))
+        self.assertEqual((gap["decision_status"], gap["raw_samples"], gap["intended_utc_ns"]),
+                         ("unresolved", "not_recorded", str(segment.stop_ns)))
+        self.assertEqual((gap["decision_reason"], gap["reviewer"]), ("' =1+1", "'\t=unknown"))
+        self.history.undo()
+        self.assertEqual(rows(), draft_rows)
+        self.history.redo()
+        self.assertEqual(rows(), applied)
+
+    def test_evidence_export_replay_uses_the_same_revision_if_live_cursor_changes(self):
+        captured = self.apply_evidence()
+        output = self.folder / "evidence.csv"
+        writer = csv.writer
+
+        def change_cursor(file):
+            self.history.undo()
+            return writer(file)
+
+        with patch.object(csv, "writer", side_effect=change_cursor):
+            self.api.export_evidence_csv(output, self.catalog, self.history)
+        self.assertEqual(self.history.current.revision_id, 0)
+        with output.open(newline="", encoding="utf-8") as file:
+            row = next(csv.DictReader(file))
+        self.assertEqual(row["revision_id"], str(captured.revision_id))
+        self.assertEqual((row["evidence_id"], row["decision_status"]), ("raw-1", "accepted"))
+        self.assertEqual((row["raw_samples"], row["attestation_current"]), ("raw_samples_match", "true"))
+
+    def test_evidence_export_from_legacy_review_keeps_exact_fit_bytes(self):
+        source = HISTORICAL / "v2.session.json"
+        original = source.read_bytes()
+        catalog, history = self.api.load_session(source)
+        evidence = self.folder / "evidence.csv"
+        fit = self.folder / "fit.csv"
+        self.api.export_evidence_csv(evidence, catalog, history, session_path=source)
+        self.api.export_csv(fit, catalog, history, session_path=source)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(fit.read_bytes(), (HISTORICAL / "applied.fit.csv").read_bytes())
+        with evidence.open(newline="", encoding="utf-8") as file:
+            rows = {(row["blow_id"], row["role"]): row for row in csv.DictReader(file)}
+        pick = rows[("B01", "original")]
+        self.assertEqual((pick["decision_status"], pick["evidence_id"], pick["raw_samples"]),
+                         ("legacy-unassessed", "", "not_recorded"))
+        self.assertEqual((pick["original_sample_index"], pick["reviewed_sample_index"], pick["reviewed_sample_utc_ns"]),
+                         ("360", "361", "946684800361000000"))
+
+    def test_exports_protect_active_session_path_and_filesystem_aliases(self):
+        self.api.save_session(self.path, self.catalog, self.history)
+        original = self.path.read_bytes()
+        hardlink = self.folder / "review hardlink.csv"
+        symlink = self.folder / "review symlink.csv"
+        os.link(self.path, hardlink)
+        aliases = [self.path, hardlink]
+        try:
+            symlink.symlink_to(self.path)
+        except OSError as error:
+            if sys.platform != "win32" or getattr(error, "winerror", None) != 1314:
+                raise
+        else:
+            aliases.append(symlink)
+        for export in (self.api.export_csv, self.api.export_evidence_csv):
+            for path in aliases:
+                with self.subTest(export=export.__name__, path=path), self.assertRaisesRegex(ValueError, "active.*session"):
+                    export(path, self.catalog, self.history, session_path=self.path)
+                self.assertEqual(path.read_bytes(), original)
+        self.apply_nudge()
+        self.api.save_session(self.path, self.catalog, self.history)
+        self.assertNotEqual(self.path.read_bytes(), original)
+
+    def test_evidence_csv_keeps_previous_bytes_if_atomic_replace_fails(self):
+        output = self.folder / "evidence.csv"
+        output.write_bytes(b"Previous evidence")
+        paths = set(self.folder.iterdir())
+        with patch.object(os, "replace", side_effect=PermissionError("Destination busy")):
+            with self.assertRaises(PermissionError):
+                self.api.export_evidence_csv(output, self.catalog, self.history)
+        self.assertEqual(output.read_bytes(), b"Previous evidence")
+        self.assertEqual(set(self.folder.iterdir()), paths)
+
+    def test_evidence_csv_checks_destination_aliases_again_before_replacement(self):
+        self.api.save_session(self.path, self.catalog, self.history)
+        output = self.folder / "evidence.csv"
+        original = self.path.read_bytes()
+        fsync = os.fsync
+
+        def place_alias(descriptor):
+            fsync(descriptor)
+            os.link(self.path, output)
+
+        with patch.object(os, "fsync", side_effect=place_alias):
+            with self.assertRaisesRegex(ValueError, "active.*session"):
+                self.api.export_evidence_csv(output, self.catalog, self.history, session_path=self.path)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertTrue(output.samefile(self.path))
+        self.assertEqual(list(self.folder.glob(".seisslate-*")), [])
+
+    def test_evidence_csv_protects_source_recordings_and_group_logs_in_redo(self):
+        from seisslate.groups import load_group_csv
+        from seisslate.review import add_groups
+
+        group_log = self.folder / "Synthetic log.csv"
+        group_log.write_text("group_id,start_utc,end_utc,duration_s\nG1,2000-01-01T00:00:00Z,,1\n", encoding="utf-8")
+        with_log = add_groups(self.history.current.state, load_group_csv(group_log))
+        self.history.preview(with_log, "Retain group log")
+        self.history.apply()
+        self.history.undo()
+        source = self.catalog.sources[0].path
+        for path, message in ((source, "recordings"), (group_log, "group log")):
+            with self.subTest(path=path):
+                original = path.read_bytes()
+                with self.assertRaisesRegex(ValueError, message):
+                    self.api.export_evidence_csv(path, self.catalog, self.history)
+                self.assertEqual(path.read_bytes(), original)
+
 
 class HistoricalSessionTest(unittest.TestCase):
     def test_frozen_v3_paired_fixture_resaves_without_wire_or_replay_changes(self):

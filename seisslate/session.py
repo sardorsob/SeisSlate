@@ -7,6 +7,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Mapping
+from copy import copy
 from dataclasses import asdict
 from hashlib import file_digest
 from math import isfinite
@@ -387,16 +388,23 @@ def load_session(
     return catalog, history
 
 
-def _protect_sources(path: Path, catalog: SourceCatalog, log_fingerprints: set[str]) -> None:
+def _same_file(path: Path, other: Path) -> bool:
+    try:
+        return path.samefile(other)
+    except FileNotFoundError:
+        return False
+
+
+def _protect_sources(
+    path: Path, catalog: SourceCatalog, log_fingerprints: set[str], session_path: Path | None,
+) -> None:
     resolved = path.resolve()
+    if session_path is not None and (resolved == session_path.resolve() or _same_file(path, session_path)):
+        raise ValueError("Choose an export destination outside the active review session")
     for source in catalog.sources:
         if resolved == source.path.resolve():
             raise ValueError("Choose a destination outside the recordings")
-        try:
-            same_file = path.samefile(source.path)
-        except FileNotFoundError:
-            same_file = False
-        if same_file:
+        if _same_file(path, source.path):
             raise ValueError("Destination aliases a source recording")
     if log_fingerprints and path.is_file():
         try:
@@ -410,9 +418,11 @@ def _protect_sources(path: Path, catalog: SourceCatalog, log_fingerprints: set[s
 
 def _atomic_write(
     path: Path, catalog: SourceCatalog, history: ReviewHistory, write: Callable[[IO[str]], None],
+    *, session_path: Path | str | None = None,
 ) -> None:
     log_fingerprints = {group.source_sha256 for revision in history.revisions for group in revision.state.groups}
-    _protect_sources(path, catalog, log_fingerprints)
+    active_session = None if session_path is None else Path(session_path)
+    _protect_sources(path, catalog, log_fingerprints, active_session)
     temporary = None
     try:
         with NamedTemporaryFile(
@@ -422,7 +432,7 @@ def _atomic_write(
             write(file.file)
             file.flush()
             os.fsync(file.fileno())
-        _protect_sources(path, catalog, log_fingerprints)
+        _protect_sources(path, catalog, log_fingerprints, active_session)
         os.replace(temporary, path)
     finally:
         if temporary is not None:
@@ -520,10 +530,13 @@ def _pick_cells(catalog: SourceCatalog, pick: Pick, mapping_offset: int | None) 
     )
 
 
-def export_csv(path: Path | str, catalog: SourceCatalog, history: ReviewHistory) -> None:
+def export_csv(
+    path: Path | str, catalog: SourceCatalog, history: ReviewHistory, *, session_path: Path | str | None = None,
+) -> None:
     """Atomically export freshly computed observations from the applied revision."""
-    revision = history.current
-    fit = analyze(catalog, history.revisions[0].state, revision.state).reviewed
+    snapshot = copy(history)
+    revision = snapshot.current
+    fit = analyze(catalog, snapshot.revisions[0].state, revision.state).reviewed
 
     def write(file: IO[str]) -> None:
         writer = csv.writer(file)
@@ -538,4 +551,85 @@ def export_csv(path: Path | str, catalog: SourceCatalog, history: ReviewHistory)
                 *_pick_cells(catalog, blow.calibration, row.calibration_mapping_offset_ns),
             ))
 
-    _atomic_write(Path(path), catalog, history, write)
+    _atomic_write(Path(path), catalog, snapshot, write, session_path=session_path)
+
+
+_EVIDENCE_CAPTURE_COLUMNS = (
+    "evidence_id", "evidence_revision_id", "evidence_method_id", "evidence_captured_utc_ns",
+    "evidence_source_hash", "evidence_channel", "evidence_segment_id", "evidence_span_start",
+    "evidence_span_stop_exclusive", "evidence_raw_digest", "evidence_display_start_utc_ns",
+    "evidence_display_stop_utc_ns", "evidence_ordinate_scale",
+)
+_EVIDENCE_COLUMNS = (
+    "revision_id", "blow_id", "role", "decision_status", "decision_reason", "reviewer", "intended_utc_ns",
+    "imported_utc_ns",
+    *(f"{kind}_{column}" for kind in ("original", "reviewed")
+      for column in ("sample_utc_ns", "source_hash", "channel", "segment_id", "sample_index")),
+    "lower_bound_utc_ns", "lower_bound_sample_index", "upper_bound_utc_ns", "upper_bound_sample_index",
+    *_EVIDENCE_CAPTURE_COLUMNS,
+    "source_identity", "raw_samples", "grid_matches", "method_supported", "recorded_view_valid",
+    "view_restoration", "mask_stale", "attestation_current",
+)
+
+
+def _sample_identity_cells(catalog: SourceCatalog, ref: SampleRef | None) -> tuple:
+    if ref is None:
+        return (None,) * 5
+    return (catalog.time_ns(ref), _csv_text(ref.source_hash), _csv_text(ref.channel),
+            _csv_text(ref.segment_id), ref.sample_index)
+
+
+def _bound_cells(catalog: SourceCatalog, ref: SampleRef | None) -> tuple[int | None, int | None]:
+    return (None, None) if ref is None else (catalog.time_ns(ref), ref.sample_index)
+
+
+def _capture_cells(record: RawEvidence | None) -> tuple:
+    if record is None:
+        return (None,) * len(_EVIDENCE_CAPTURE_COLUMNS)
+    view = record.confirmation.view
+    return (
+        _csv_text(record.evidence_id), record.applied_revision_id, _csv_text(record.method_id), record.captured_utc_ns,
+        _csv_text(view.source_hash), _csv_text(view.channel), _csv_text(view.span.segment_id),
+        view.span.start, view.span.stop, record.confirmation.samples.digest,
+        view.display_start_ns, view.display_stop_ns, _csv_text(view.ordinate_scale),
+    )
+
+
+def _csv_flag(value: bool | None) -> str:
+    return "" if value is None else str(value).lower()
+
+
+def export_evidence_csv(
+    path: Path | str, catalog: SourceCatalog, history: ReviewHistory, *, session_path: Path | str | None = None,
+) -> None:
+    """Export applied pick evidence and replay checks, one row per blow and receiver role."""
+    snapshot = copy(history)
+    revision = snapshot.current
+    decisions = {decision.target: decision for decision in revision.state.pick_decisions}
+    records = {record.evidence_id: record for record in revision.state.raw_evidence}
+
+    def write(file: IO[str]) -> None:
+        writer = csv.writer(file)
+        writer.writerow(_EVIDENCE_COLUMNS)
+        for blow in revision.state.blows:
+            targets: tuple[tuple[Role, Pick], ...] = (("original", blow.original), ("calibration", blow.calibration))
+            for role, pick in targets:
+                decision = decisions.get((blow.blow_id, role))
+                record = records.get(decision.evidence_id) if decision and decision.evidence_id else None
+                replay = snapshot.replay_pick_evidence(catalog, blow.blow_id, role)
+                writer.writerow((
+                    revision.revision_id, _csv_text(blow.blow_id), role,
+                    decision.status if decision else "legacy-unassessed",
+                    _csv_text(decision.reason) if decision else "", _csv_text(decision.reviewer) if decision else "",
+                    decision.intended_utc_ns if decision else None, pick.imported_ns,
+                    *_sample_identity_cells(catalog, pick.original_ref), *_sample_identity_cells(catalog, pick.reviewed_ref),
+                    *_bound_cells(catalog, decision.lower_ref if decision else None),
+                    *_bound_cells(catalog, decision.upper_ref if decision else None),
+                    *_capture_cells(record),
+                    replay.source_identity, replay.raw_samples, _csv_flag(replay.grid_matches),
+                    _csv_flag(replay.method_supported), _csv_flag(replay.recorded_view_valid),
+                    "not_checked" if record else "not_recorded",
+                    _csv_flag(replay.masks_changed if record else None), _csv_flag(replay.attestation_current if record else None),
+                ))
+
+    _atomic_write(Path(path), catalog, snapshot, write, session_path=session_path)
