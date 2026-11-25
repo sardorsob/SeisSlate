@@ -1,0 +1,181 @@
+{
+  "legacy": {
+    "test_base_commit": "f197828f18fce7c72681efed1bd85daa559154fa",
+    "writer_commits": {
+      "v1.session.json": "11d03cbfc77ee90ac693fb5cc279a709556623e7",
+      "v2.session.json": "b285bd309d19a223ab7c860b12b1d32b70e2163c"
+    },
+    "writer_environment": "macOS 26.5 arm64, CPython 3.13.9, NumPy 2.5.5 (Accelerate), ObsPy 1.5.2",
+    "revision_reasons": ["Initial review", "Nudge original pick, mask its prior sample and exclude B03", "Nudge calibration pick"],
+    "exclusion_reason": "Synthetic fit exclusion",
+    "sha256": {
+      "v1.session.json": "b009a825b1293fedf5ab0d6f20a5e6b72d398f5344d9f885e3bf920a123204a6",
+      "v2.session.json": "181e200c3c408c478b6066f1ad6b3e044e5eaac019ec54456abbc83b322f4988",
+      "applied.fit.csv": "44d7e01c0a2b2afe540071ebd4c40c6c0463790d2585d62d50d8299d7b522f00",
+      "redo.fit.csv": "6e0279a322aab43edcc09566a04cde4b397247933ade90b942f3620a4bac891f",
+      "../synthetic/original.mseed": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+      "../synthetic/calibration.mseed": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+      "../hammer-groups.csv": "46631d2c2c2faaff7630d40ab6c33cf443cb5175ca793fa93eda7f15340ee8e6"
+    },
+    "generation": [
+      "In each writer checkout, initialize from its shipped synthetic example using B01, B02 and B03. Assign both receiver distances 20 m for B01 and 22 m for B02. Leave receiver roles unassigned in v1.",
+      "Apply B01 original +1 sample, mask original indices [360, 361) and exclude B03 from the fit. In v2, import the review-start row from the synthetic group log and link B01 to it in this revision.",
+      "Apply a B01 calibration -1 sample edit and undo it. Replace it with B01 calibration +1 sample. In v2, also mark review-start reviewed. Apply and undo, leaving IDs 0, 1, 3 with cursor 1 and next ID 4.",
+      "Save at that cursor and export there and after redo with each historical writer. Both writers produce the same CRLF bytes at matching cursors. The fitted zero slopes and intercepts keep the byte comparison independent of ordinary least-squares rounding. B03 supplies a nonzero residual. The unmodified synthetic example tests a nonzero signed fit."
+    ]
+  },
+  "rms": {
+    "method": "Demeaned population RMS contrast",
+    "derivation": "Each two-level window has equally many values m-a and m+a, so its mean is m and RMS is a. Its contrast is the event amplitude divided by the background amplitude. This gives the expected values independently of SeisSlate.",
+    "input_conventions": [
+      "Each case replaces its named input fields in defaults. Each segment inherits the selected source, channel, period and dtype unless it overrides them. Segment start_ns defaults to zero. A segment's repeat field concatenates its sample block that many times.",
+      "Windows are half-open UTC nanosecond intervals. Strings of the form numerator/denominator specify exact rational nanoseconds. Mask triples specify a segment ID and half-open sample indices. NaN is encoded as a string.",
+      "The source and channel identify the selected recording. A per-window background_source can override its source identity. Epoch labels describe synthetic evidence. The unknown epoch has no response evidence.",
+      "Unavailable cases list the reasons the computation must report. Additional applicable reasons may accompany them. Unavailable contrast is null. Numeric fields omitted from an expectation are unspecified."
+    ],
+    "comparison": {"relative_tolerance": 1e-12, "absolute_tolerance": 0, "zero_must_be_exact": true},
+    "defaults": {
+      "source": "fixture-a",
+      "channel": "XX.SYN..EHZ",
+      "period_ns": 1000000,
+      "dtype": "int32",
+      "segments": [{"id": "main", "samples": [2, 2, 6, 6, 7, 7, 9, 9]}],
+      "event_ns": [0, 4000000],
+      "background_ns": [4000000, 8000000],
+      "masks": [],
+      "epoch_status": "unknown"
+    },
+    "cases": [
+      {
+        "id": "adjacent_windows_unknown_epoch",
+        "expected": {"event_mean": 4, "background_mean": 8, "event_rms": 2, "background_rms": 1, "contrast": 2,
+          "samples_per_window": 4, "duration_ns": 4000000, "epoch_status": "unknown", "units": "raw units unknown", "qualified": true}
+      },
+      {
+        "id": "independent_dc_shifts",
+        "input": {"segments": [{"id": "main", "samples": [102, 102, 106, 106, -93, -93, -91, -91]}]},
+        "expected": {"event_mean": 104, "background_mean": -92, "event_rms": 2, "background_rms": 1, "contrast": 2}
+      },
+      {
+        "id": "constant_background",
+        "input": {"segments": [{"id": "main", "samples": [2, 2, 6, 6, 8, 8, 8, 8]}]},
+        "expected": {"event_mean": 4, "background_mean": 8, "event_rms": 2, "background_rms": 0, "contrast": null, "reasons": ["zero_background"]}
+      },
+      {
+        "id": "zero_event_rms",
+        "input": {"segments": [{"id": "main", "samples": [4, 4, 4, 4, 7, 7, 9, 9]}]},
+        "expected": {"event_mean": 4, "background_mean": 8, "event_rms": 0, "background_rms": 1, "contrast": 0}
+      },
+      {
+        "id": "finite_squares_would_overflow",
+        "input": {"dtype": "float64", "segments": [{"id": "main", "samples": [-1e308, -1e308, 1e308, 1e308, -5e307, -5e307, 5e307, 5e307]}]},
+        "expected": {"event_mean": 0, "background_mean": 0, "event_rms": 1e308, "background_rms": 5e307, "contrast": 2}
+      },
+      {
+        "id": "representable_variation_on_large_offset",
+        "input": {"dtype": "float64", "segments": [{"id": "main", "samples": [4503599627370492, 4503599627370492, 4503599627370500, 4503599627370500, 4503599627370494, 4503599627370494, 4503599627370498, 4503599627370498]}]},
+        "expected": {"event_mean": 4503599627370496, "background_mean": 4503599627370496, "event_rms": 4, "background_rms": 2, "contrast": 2}
+      },
+      {
+        "id": "tiny_nonzero_background",
+        "input": {"dtype": "float64", "segments": [{"id": "main", "samples": [-2e-300, -2e-300, 2e-300, 2e-300, -1e-300, -1e-300, 1e-300, 1e-300]}]},
+        "expected": {"event_mean": 0, "background_mean": 0, "event_rms": 2e-300, "background_rms": 1e-300, "contrast": 2}
+      },
+      {
+        "id": "tiny_representable_contrast",
+        "input": {"dtype": "float64", "segments": [{"id": "main", "samples": [-1e-300, -1e-300, 1e-300, 1e-300, -1, -1, 1, 1]}]},
+        "expected": {"event_mean": 0, "background_mean": 0, "event_rms": 1e-300, "background_rms": 1, "contrast": 1e-300}
+      },
+      {
+        "id": "lossy_integer_conversion",
+        "input": {"dtype": "int64", "segments": [{"id": "main", "samples": [9007199254740992, 9007199254740992, 9007199254740993, 9007199254740993, 0, 0, 2, 2]}]},
+        "expected": {"contrast": null, "reasons": ["numeric_failure"]}
+      },
+      {
+        "id": "nonrepresentable_ratio",
+        "input": {"dtype": "float64", "segments": [{"id": "main", "samples": [-1e300, -1e300, 1e300, 1e300, -1e-300, -1e-300, 1e-300, 1e-300]}]},
+        "expected": {"contrast": null, "reasons": ["numeric_failure"]}
+      },
+      {
+        "id": "rational_period_exact_terminal_boundary",
+        "input": {"period_ns": "1000000000/3", "segments": [{"id": "main", "samples": [-2, 2, -1, 1]}],
+          "event_ns": [0, "2000000000/3"], "background_ns": ["2000000000/3", "4000000000/3"]},
+        "expected": {"event_mean": 0, "background_mean": 0, "event_rms": 2, "background_rms": 1, "contrast": 2,
+          "samples_per_window": 2, "duration_ns": "2000000000/3", "background_stop_index": 4}
+      },
+      {
+        "id": "rounded_up_terminal_boundary",
+        "input": {"period_ns": "1000000000/3", "segments": [{"id": "main", "samples": [-2, 2, -1, 1]}],
+          "event_ns": [0, "2000000000/3"], "background_ns": ["2000000000/3", 1333333334]},
+        "expected": {"background_mean": null, "background_rms": null, "contrast": null, "reasons": ["out_of_bounds"]}
+      },
+      {
+        "id": "gap_with_fifteen_of_sixteen_samples_present",
+        "input": {"segments": [{"id": "left", "samples": [-2, 2], "repeat": 4},
+          {"id": "right", "start_ns": 9000000, "samples": [-1, 1], "repeat": 12}],
+          "event_ns": [0, 16000000], "background_ns": [16000000, 32000000]},
+        "expected": {"event_mean": null, "event_rms": null, "contrast": null, "reasons": ["cross_segment"]}
+      },
+      {
+        "id": "one_masked_sample_with_fifteen_of_sixteen_usable",
+        "input": {"segments": [{"id": "main", "samples": [-1, 1], "repeat": 16}], "masks": [["main", 19, 20]],
+          "event_ns": [0, 16000000], "background_ns": [16000000, 32000000]},
+        "expected": {"background_mean": null, "background_rms": null, "contrast": null, "reasons": ["masked_samples"]}
+      },
+      {
+        "id": "one_nonfinite_sample",
+        "input": {"dtype": "float64", "segments": [{"id": "main", "samples": [2, 2, "NaN", 6, 7, 7, 9, 9]}]},
+        "expected": {"event_mean": null, "event_rms": null, "contrast": null, "reasons": ["nonfinite_samples"]}
+      },
+      {
+        "id": "duplicate_samples_within_window",
+        "input": {"segments": [{"id": "main", "samples": [2, 2, 6, 6, 7, 7, 9, 9]},
+          {"id": "duplicate", "start_ns": 2000000, "samples": [6, 6]}]},
+        "expected": {"event_mean": null, "event_rms": null, "contrast": null, "reasons": ["ambiguous_coverage"]}
+      },
+      {
+        "id": "duplicate_samples_outside_windows",
+        "input": {"segments": [{"id": "main", "samples": [2, 2, 6, 6, 7, 7, 9, 9, 0, 0, 99, 99]},
+          {"id": "duplicate", "start_ns": 10000000, "samples": [99, 99]}]},
+        "expected": {"event_mean": 4, "background_mean": 8, "event_rms": 2, "background_rms": 1, "contrast": 2}
+      },
+      {
+        "id": "same_channel_different_source",
+        "input": {"background_source": "fixture-b", "segments": [{"id": "main", "samples": [2, 2, 6, 6, 7, 7, 9, 9]},
+          {"id": "other", "source": "fixture-b", "samples": [2, 2, 6, 6, 7, 7, 9, 9]}]},
+        "expected": {"contrast": null, "reasons": ["wrong_source_or_channel"]}
+      },
+      {
+        "id": "missing_background",
+        "input": {"background_ns": null},
+        "expected": {"contrast": null, "reasons": ["missing_window"]}
+      },
+      {
+        "id": "unequal_window_lengths",
+        "input": {"background_ns": [4000000, 7000000]},
+        "expected": {"contrast": null, "reasons": ["unequal_length"]}
+      },
+      {
+        "id": "one_sample_per_window",
+        "input": {"event_ns": [0, 1000000], "background_ns": [4000000, 5000000]},
+        "expected": {"contrast": null, "reasons": ["too_short"]}
+      },
+      {
+        "id": "one_sample_above_resource_limit",
+        "input": {"segments": [{"id": "main", "samples": [-1, 1], "repeat": 1000001}],
+          "event_ns": [0, 1000001000000], "background_ns": [1000001000000, 2000002000000]},
+        "expected": {"contrast": null, "reasons": ["too_large"]}
+      },
+      {
+        "id": "overlapping_windows",
+        "input": {"background_ns": [3000000, 7000000]},
+        "expected": {"contrast": null, "reasons": ["overlapping_windows"]}
+      },
+      {
+        "id": "conflicting_epoch",
+        "input": {"epoch_status": "conflicting"},
+        "expected": {"contrast": null, "reasons": ["epoch_conflict"], "epoch_status": "conflicting"}
+      }
+    ]
+  }
+}

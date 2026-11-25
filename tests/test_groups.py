@@ -11,7 +11,7 @@ import numpy as np
 
 from seisslate.analysis import analyze
 from seisslate.example import load_example
-from seisslate.review import Receiver, ReviewState, nudge_pick
+from seisslate.review import Receiver, ReviewState
 from seisslate.session import export_csv, load_session, save_session
 from seisslate.sources import Segment, Source, SourceCatalog
 
@@ -171,36 +171,6 @@ class GroupTest(unittest.TestCase):
         self.assertEqual((result.original.coverage, result.original.channel_status), ("conflict", "conflict"))
         self.assertEqual(result.original.intervals, ())
         self.assertEqual((result.calibration.coverage, result.calibration.channel_status), ("none", "missing"))
-
-    def test_legacy_session_preserves_applied_cursor_next_id_and_redo(self):
-        catalog, history = load_example()
-        edited = nudge_pick(history.current.state, catalog, "B01", "original", 1)
-        history.preview(edited, "Nudge first onset")
-        history.apply()
-        second_edit = nudge_pick(edited, catalog, "B01", "calibration", 1)
-        history.preview(second_edit, "Nudge second onset")
-        history.apply()
-        history.undo()
-        path = self.path.with_suffix(".json")
-        save_session(path, catalog, history)
-        document = json.loads(path.read_text())
-        document["schema_version"] = 1
-        # Version 1 predates both fields. Every revision, including redo, used this shape.
-        for revision in document["revisions"]:
-            revision["state"].pop("groups", None)
-            for blow in revision["state"]["blows"]:
-                blow.pop("group_id", None)
-        path.write_text(json.dumps(document))
-        _, reopened = load_session(path)
-        self.assertEqual(reopened.revisions, history.revisions)
-        self.assertEqual(reopened.next_revision_id, 3)
-        self.assertEqual(reopened.current.state.groups, ())
-        self.assertTrue(reopened.can_undo)
-        self.assertTrue(reopened.can_redo)
-        self.assertEqual(reopened.undo().state, history.revisions[0].state)
-        self.assertEqual(reopened.redo().state, edited)
-        self.assertEqual(reopened.redo().state, second_edit)
-        self.assertIsNone(reopened.current.state.blows[0].group_id)
 
     def test_v2_group_and_explicit_blow_link_survive_reopen_and_reject_bad_links(self):
         from seisslate.review import add_groups, set_group_reviewed

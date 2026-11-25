@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
+HISTORICAL = FIXTURE.with_name("review-evidence")
 
 
 class SessionTest(unittest.TestCase):
@@ -187,6 +188,102 @@ print(json.dumps([
         missing = rows["B07"]
         self.assertEqual((missing["lag_ns"], missing["residual_m"]), ("", ""))
         self.assertEqual(missing["status"], "missing")
+
+
+class HistoricalSessionTest(unittest.TestCase):
+    def test_historical_sessions_restore_applied_edits_and_unapplied_redo(self):
+        from seisslate.session import load_session
+
+        for version in (1, 2):
+            with self.subTest(version=version):
+                path = HISTORICAL / f"v{version}.session.json"
+                original_bytes = path.read_bytes()
+                self.assertEqual(json.loads(original_bytes)["schema_version"], version)
+                catalog, history = load_session(path)
+                self.assertEqual(
+                    tuple(source.path for source in catalog.sources),
+                    (FIXTURE / "original.mseed", FIXTURE / "calibration.mseed"),
+                )
+                self.assertEqual(tuple(revision.revision_id for revision in history.revisions), (0, 1, 3))
+                self.assertEqual((history.cursor, history.current.revision_id, history.next_revision_id), (1, 1, 4))
+                self.assertTrue(history.can_undo)
+                self.assertTrue(history.can_redo)
+                self.assertIsNone(history.draft)
+
+                applied = history.current.state
+                blow = applied.blow("B01")
+                self.assertEqual(blow.original.imported_ns, 946_684_800_360_000_000)
+                self.assertEqual(blow.original.original_ref.sample_index, 360)
+                self.assertEqual(blow.original.reviewed_ref.sample_index, 361)
+                self.assertEqual(blow.calibration.reviewed_ref.sample_index, 400)
+                self.assertTrue(applied.is_masked(blow.original.original_ref))
+                self.assertFalse(applied.is_masked(blow.original.reviewed_ref))
+                self.assertFalse(applied.blow("B03").included)
+
+                initial = history.undo().state
+                self.assertEqual(initial.blow("B01").original.reviewed_ref.sample_index, 360)
+                self.assertEqual(initial.masks, ())
+                self.assertTrue(initial.blow("B03").included)
+                self.assertEqual(initial.groups, ())
+                self.assertEqual(history.redo().state, applied)
+                redo = history.redo().state
+                self.assertEqual(redo.blow("B01").original, blow.original)
+                self.assertEqual(redo.blow("B01").calibration.reviewed_ref.sample_index, 401)
+                self.assertEqual(redo.masks, applied.masks)
+                self.assertFalse(history.can_redo)
+                if version == 1:
+                    self.assertEqual(applied.receivers, ())
+                    self.assertEqual(applied.groups, ())
+                    self.assertEqual(redo.groups, ())
+                    self.assertIsNone(redo.blow("B01").group_id)
+                else:
+                    self.assertEqual(blow.group_id, "review-start")
+                    (group,) = applied.groups
+                    (reviewed_group,) = redo.groups
+                    self.assertEqual((group.source_file, group.source_row), ("hammer-groups.csv", 2))
+                    self.assertFalse(group.reviewed)
+                    self.assertEqual(reviewed_group, replace(group, reviewed=True))
+                self.assertEqual(path.read_bytes(), original_bytes)
+
+    def test_historical_fit_csv_matches_writer_bytes_at_applied_cursor_and_after_redo(self):
+        from seisslate.session import export_csv, load_session
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "fit.csv"
+            for version in (1, 2):
+                catalog, history = load_session(HISTORICAL / f"v{version}.session.json")
+                for state in ("applied", "redo"):
+                    with self.subTest(version=version, state=state):
+                        export_csv(path, catalog, history)
+                        expected = HISTORICAL / f"{state}.fit.csv"
+                        self.assertEqual(path.read_bytes(), expected.read_bytes())
+                    if state == "applied":
+                        history.redo()
+
+    def test_historical_readers_enforce_version_specific_keys_in_redo(self):
+        from seisslate.session import load_session
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "review.json"
+            for version in (1, 2):
+                for fields, key, value in (((), "groups", []), (("blows", 0), "group_id", None)):
+                    with self.subTest(version=version, key=key):
+                        fixture = HISTORICAL / f"v{version}.session.json"
+                        document = json.loads(fixture.read_bytes())
+                        state = document["revisions"][-1]["state"]
+                        for field in fields:
+                            state = state[field]
+                        if version == 1:
+                            state[key] = value
+                        else:
+                            del state[key]
+                        path.write_text(json.dumps(document), encoding="utf-8")
+                        relink = {
+                            source["sha256"]: FIXTURE / Path(source["path"]).name
+                            for source in document["sources"]
+                        }
+                        with self.assertRaisesRegex(ValueError, "fields"):
+                            load_session(path, relink=relink)
 
 
 if __name__ == "__main__":

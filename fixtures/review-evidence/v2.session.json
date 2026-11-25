@@ -1,0 +1,499 @@
+{
+  "schema_version": 2,
+  "method_version": "hammer-differential-ols-v1",
+  "sources": [
+    {
+      "path": "../synthetic/original.mseed",
+      "sha256": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+      "size_bytes": 13824
+    },
+    {
+      "path": "../synthetic/calibration.mseed",
+      "sha256": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+      "size_bytes": 13824
+    }
+  ],
+  "revisions": [
+    {
+      "revision_id": 0,
+      "state": {
+        "blows": [
+          {
+            "blow_id": "B01",
+            "original": {
+              "imported_ns": 946684800360000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 360
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 360
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800400000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 400
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 400
+              }
+            },
+            "distance_original_m": 20.0,
+            "distance_calibration_m": 20.0,
+            "included": true,
+            "reason": "",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": null
+          },
+          {
+            "blow_id": "B02",
+            "original": {
+              "imported_ns": 946684800815000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 815
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 815
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800800000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 800
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 800
+              }
+            },
+            "distance_original_m": 22.0,
+            "distance_calibration_m": 22.0,
+            "included": true,
+            "reason": "",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": null
+          },
+          {
+            "blow_id": "B03",
+            "original": {
+              "imported_ns": 946684800910000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 910
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 910
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800880000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 880
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 880
+              }
+            },
+            "distance_original_m": 30.6,
+            "distance_calibration_m": 13.6,
+            "included": true,
+            "reason": "",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": null
+          }
+        ],
+        "masks": [],
+        "receivers": [
+          {
+            "role": "original",
+            "channel": "XX.ORIG..EHZ",
+            "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08"
+          },
+          {
+            "role": "calibration",
+            "channel": "XX.CALB..EHZ",
+            "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7"
+          }
+        ],
+        "timing_evidence": "Synthetic recordings share a known integer-millisecond clock.",
+        "groups": []
+      },
+      "reason": "Initial review"
+    },
+    {
+      "revision_id": 1,
+      "state": {
+        "blows": [
+          {
+            "blow_id": "B01",
+            "original": {
+              "imported_ns": 946684800360000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 360
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 361
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800400000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 400
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 400
+              }
+            },
+            "distance_original_m": 20.0,
+            "distance_calibration_m": 20.0,
+            "included": true,
+            "reason": "",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": "review-start"
+          },
+          {
+            "blow_id": "B02",
+            "original": {
+              "imported_ns": 946684800815000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 815
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 815
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800800000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 800
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 800
+              }
+            },
+            "distance_original_m": 22.0,
+            "distance_calibration_m": 22.0,
+            "included": true,
+            "reason": "",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": null
+          },
+          {
+            "blow_id": "B03",
+            "original": {
+              "imported_ns": 946684800910000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 910
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 910
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800880000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 880
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 880
+              }
+            },
+            "distance_original_m": 30.6,
+            "distance_calibration_m": 13.6,
+            "included": false,
+            "reason": "Synthetic fit exclusion",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": null
+          }
+        ],
+        "masks": [
+          {
+            "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+            "start": 360,
+            "stop": 361
+          }
+        ],
+        "receivers": [
+          {
+            "role": "original",
+            "channel": "XX.ORIG..EHZ",
+            "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08"
+          },
+          {
+            "role": "calibration",
+            "channel": "XX.CALB..EHZ",
+            "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7"
+          }
+        ],
+        "timing_evidence": "Synthetic recordings share a known integer-millisecond clock.",
+        "groups": [
+          {
+            "group_id": "review-start",
+            "start_ns": 946684800300000000,
+            "stop_ns": 946684801000000000,
+            "start_utc": "2000-01-01T00:00:00.300Z",
+            "end_utc": "2000-01-01T00:00:01.000Z",
+            "duration_s": null,
+            "source_file": "hammer-groups.csv",
+            "source_sha256": "46631d2c2c2faaff7630d40ab6c33cf443cb5175ca793fa93eda7f15340ee8e6",
+            "source_row": 2,
+            "time_basis": "UTC",
+            "source_position_id": null,
+            "original_channel": "XX.ORIG..EHZ",
+            "calibration_channel": "XX.CALB..EHZ",
+            "timing_note": "Synthetic common clock",
+            "geometry_note": null,
+            "reviewed": false
+          }
+        ]
+      },
+      "reason": "Nudge original pick, mask its prior sample and exclude B03"
+    },
+    {
+      "revision_id": 3,
+      "state": {
+        "blows": [
+          {
+            "blow_id": "B01",
+            "original": {
+              "imported_ns": 946684800360000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 360
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 361
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800400000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 400
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 401
+              }
+            },
+            "distance_original_m": 20.0,
+            "distance_calibration_m": 20.0,
+            "included": true,
+            "reason": "",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": "review-start"
+          },
+          {
+            "blow_id": "B02",
+            "original": {
+              "imported_ns": 946684800815000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 815
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 815
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800800000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 800
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 800
+              }
+            },
+            "distance_original_m": 22.0,
+            "distance_calibration_m": 22.0,
+            "included": true,
+            "reason": "",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": null
+          },
+          {
+            "blow_id": "B03",
+            "original": {
+              "imported_ns": 946684800910000000,
+              "original_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 910
+              },
+              "reviewed_ref": {
+                "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08",
+                "channel": "XX.ORIG..EHZ",
+                "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+                "sample_index": 910
+              }
+            },
+            "calibration": {
+              "imported_ns": 946684800880000000,
+              "original_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 880
+              },
+              "reviewed_ref": {
+                "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7",
+                "channel": "XX.CALB..EHZ",
+                "segment_id": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7:0",
+                "sample_index": 880
+              }
+            },
+            "distance_original_m": 30.6,
+            "distance_calibration_m": 13.6,
+            "included": false,
+            "reason": "Synthetic fit exclusion",
+            "pair_status": "confirmed",
+            "pair_reason": "",
+            "group_id": null
+          }
+        ],
+        "masks": [
+          {
+            "segment_id": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08:0",
+            "start": 360,
+            "stop": 361
+          }
+        ],
+        "receivers": [
+          {
+            "role": "original",
+            "channel": "XX.ORIG..EHZ",
+            "source_hash": "e58b8564c1d80a8d63760c4f268f93dc396e26c6f4966d60685fed9aa858df08"
+          },
+          {
+            "role": "calibration",
+            "channel": "XX.CALB..EHZ",
+            "source_hash": "c8f415d59ae3fd06698c4a08d2f204841452ea8d2977abbe4048c179f70649f7"
+          }
+        ],
+        "timing_evidence": "Synthetic recordings share a known integer-millisecond clock.",
+        "groups": [
+          {
+            "group_id": "review-start",
+            "start_ns": 946684800300000000,
+            "stop_ns": 946684801000000000,
+            "start_utc": "2000-01-01T00:00:00.300Z",
+            "end_utc": "2000-01-01T00:00:01.000Z",
+            "duration_s": null,
+            "source_file": "hammer-groups.csv",
+            "source_sha256": "46631d2c2c2faaff7630d40ab6c33cf443cb5175ca793fa93eda7f15340ee8e6",
+            "source_row": 2,
+            "time_basis": "UTC",
+            "source_position_id": null,
+            "original_channel": "XX.ORIG..EHZ",
+            "calibration_channel": "XX.CALB..EHZ",
+            "timing_note": "Synthetic common clock",
+            "geometry_note": null,
+            "reviewed": true
+          }
+        ]
+      },
+      "reason": "Nudge calibration pick"
+    }
+  ],
+  "cursor": 1,
+  "next_revision_id": 4
+}
