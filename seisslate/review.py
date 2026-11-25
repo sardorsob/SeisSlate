@@ -166,8 +166,8 @@ def _replace_blow(state: ReviewState, change: Blow) -> ReviewState:
     return replace(state, blows=tuple(change if blow.blow_id == change.blow_id else blow for blow in state.blows))
 
 
-def set_pick_decision(state: ReviewState, catalog: SourceCatalog, decision: PickDecision) -> ReviewState:
-    """Review the current point or record why a receiver has no reviewed point."""
+def validate_pick_decision(state: ReviewState, catalog: SourceCatalog, decision: PickDecision) -> None:
+    """Bind a pick decision and its support to the exact receiver recording."""
     pick = getattr(state.blow(decision.blow_id), decision.role)
     if pick.reviewed_ref != decision.reviewed_ref:
         raise ValueError("Pick decision must match the reviewed sample for its blow and receiver")
@@ -201,6 +201,10 @@ def set_pick_decision(state: ReviewState, catalog: SourceCatalog, decision: Pick
             if intended is None or not start <= intended < stop:
                 raise ValueError("Inspection span must cover the intended UTC of an unresolved decision")
 
+
+def set_pick_decision(state: ReviewState, catalog: SourceCatalog, decision: PickDecision) -> ReviewState:
+    """Review the current point or record why a receiver has no reviewed point."""
+    validate_pick_decision(state, catalog, decision)
     decisions = {previous.target: previous for previous in state.pick_decisions}
     decisions[decision.target] = decision
     return replace(state, pick_decisions=tuple(decisions.values()))
@@ -422,6 +426,8 @@ def _validate_transition(before: ReviewState, after: ReviewState) -> None:
 def _validate_applied_revision(before: ReviewState | None, revision: Revision) -> None:
     previous_records = before.raw_evidence if before is not None else ()
     state = revision.state
+    if before is None and state.interval_actions:
+        raise ValueError("The initial revision cannot contain recorded interval actions")
     if state.raw_evidence[:len(previous_records)] != previous_records:
         raise ValueError("A review edit cannot rewrite captured raw evidence")
     new_records = state.raw_evidence[len(previous_records):]

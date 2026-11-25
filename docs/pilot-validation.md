@@ -17,7 +17,7 @@ The evidence panel compares each declared receiver channel with the embedded cha
 
 The CSV uses UTF-8 and requires `group_id` and `start_utc`. Give each row either `end_utc` or `duration_s`, in seconds. Windows include their start and exclude their end. Enter ISO 8601 times with `Z` or `+00:00`. Optional columns are `time_basis`, `source_position_id`, `original_channel`, `calibration_channel`, `timing_note`, and `geometry_note`. Use the receiver columns for the exact expected channel IDs. The review stores each row's source filename, SHA-256 and row number.
 
-Check that applying the import creates zero picks and leaves the existing fit unchanged. Undo, redo, and reopen the session. Verify that the group windows and evidence survive and that a CSV with an invalid or duplicate row produces a line-level error without changing the review. Keep the source log and write the reviewed CSV to a separate file. Earlier sessions open with their existing history and an empty group queue. Saving writes session version 2, which requires this version of the workbench or later.
+Check that applying the import creates zero picks and leaves the existing fit unchanged. Undo, redo, and reopen the session. Verify that the group windows and evidence survive and that a CSV with an invalid or duplicate row produces a line-level error without changing the review. Keep the source log and write the reviewed CSV to a separate file. Version 1 sessions reopen with their existing history and an empty group queue. Version 2 sessions retain their groups and links. Saving a paired review writes version 3. To reopen the upgraded file, use a SeisSlate build that supports version 3.
 
 ## Windows workstation
 

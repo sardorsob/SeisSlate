@@ -37,6 +37,135 @@ class SessionTest(unittest.TestCase):
         self.history.preview(state, "Nudge first onset")
         return self.history.apply()
 
+    def apply_evidence(self):
+        from seisslate.evidence import PickDecision, RawEvidenceView
+        from seisslate.review import mask_spans, set_pick_decision
+        from seisslate.sources import SampleSpan
+
+        state = self.history.current.state
+        point = state.blow("B01").original.reviewed_ref
+        segment = self.catalog.segment(point)
+        span = SampleSpan(segment.segment_id, 355, 366)
+        bounds = segment.ref(359), segment.ref(361)
+        decision = PickDecision(
+            "B01", "original", point, "accepted", *bounds, reason="Clear onset", reviewer="Reviewer é",
+            inspection_span=span,
+        )
+        state = set_pick_decision(state, self.catalog, decision)
+        state = mask_spans(
+            state, (SampleSpan(segment.segment_id, 350, 351),), catalog=self.catalog, reason="Separate transient",
+        )
+        self.history.preview(state, "Waveform review")
+        view = RawEvidenceView(
+            point.source_hash, point.channel, span, segment.time_ns(355), segment.time_ns(366), point, bounds,
+        )
+        confirmation = self.history.confirm_current_pick_evidence(self.catalog, decision, view)
+        return self.history.apply_with_evidence(
+            self.catalog, confirmation, view, captured_utc_ns=1_800_000_000_000_000_000,
+            software_versions=(("SeisSlate", "test"), ("NumPy", "test")),
+        )
+
+    def test_v3_round_trips_full_evidence_in_redo_and_omits_draft(self):
+        from seisslate.review import set_inclusion
+
+        evidence = self.apply_evidence()
+        initial = self.history.undo()
+        self.history.preview(set_inclusion(initial.state, "B01", False, "Draft-only edit"), "Draft-only revision")
+        self.api.save_session(self.path, self.catalog, self.history)
+        saved = json.loads(self.path.read_bytes())
+        self.assertEqual(set(saved), {
+            "schema_version", "mode", "method_version", "sources", "revisions", "cursor", "next_revision_id",
+        })
+        self.assertEqual((saved["schema_version"], saved["mode"]), (3, "paired"))
+        self.assertTrue(all(revision["state"]["rms"] is None for revision in saved["revisions"]))
+        self.assertNotIn(b"Draft-only", self.path.read_bytes())
+        catalog, reopened = self.api.load_session(self.path)
+        self.assertEqual(reopened.current, initial)
+        self.assertEqual(reopened.next_revision_id, self.history.next_revision_id)
+        self.assertEqual(reopened.redo(), evidence)
+        self.assertTrue(reopened.replay_pick_evidence(catalog, "B01", "original").attestation_current)
+        self.assertEqual(reopened.current.state.interval_actions[0].reason, "Separate transient")
+
+    def test_v3_rejects_unknown_and_malformed_contents_in_retained_redo(self):
+        self.apply_evidence()
+        self.history.undo()
+        self.api.save_session(self.path, self.catalog, self.history)
+        original = self.path.read_bytes()
+        base = ("revisions", 1, "state")
+        record = base + ("raw_evidence", 0)
+        confirmation = record + ("confirmation",)
+        decision = base + ("pick_decisions", 0)
+        drop = object()
+        for fields, invalid, message in (
+            (("schema_version",), 4, "Unsupported session schema version"),
+            (("schema_version",), True, "schema version"),
+            (("mode",), drop, "fields"),
+            (("mode",), "unknown-mode", "Unsupported session mode"),
+            (("mode",), "single-channel", "single-channel"),
+            (("mode",), False, "session mode"),
+            (("rms",), None, "fields"),
+            (base + ("rms",), drop, "fields"),
+            (base + ("rms",), {}, "RMS"),
+            (base + ("pick_decisions",), True, "decisions"),
+            (decision + ("role",), "calibration", "reviewed sample"),
+            (decision + ("evidence_id",), "dangling", "linked raw evidence"),
+            (decision + ("upper_ref", "sample_index"), 358, "Inclusive bounds"),
+            (decision + ("lower_ref", "sample_index"), True, "sample index"),
+            (record + ("applied_revision_id",), 2, "applied revision"),
+            (confirmation + ("samples", "sample_count"), True, "sample count"),
+            (confirmation + ("view", "bounds"), [None, None], "bounds"),
+            (confirmation + ("samples", "extra"), 2, "fields"),
+            (record + ("software_versions",), ["ab"], "version"),
+        ):
+            with self.subTest(fields=fields, invalid=invalid):
+                raw = json.loads(original)
+                node = raw
+                for field in fields[:-1]:
+                    node = node[field]
+                if invalid is drop:
+                    del node[fields[-1]]
+                else:
+                    node[fields[-1]] = invalid
+                self.path.write_text(json.dumps(raw), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    self.api.load_session(self.path)
+
+        duplicate = original.replace(b'"sample_count": 11,', b'"sample_count": 11, "sample_count": 11,', 1)
+        self.assertNotEqual(duplicate, original)
+        self.path.write_bytes(duplicate)
+        with self.assertRaisesRegex(ValueError, "Duplicate JSON fields"):
+            self.api.load_session(self.path)
+
+    def test_v3_preserves_digest_mismatch_and_unsupported_method_for_replay(self):
+        self.apply_evidence()
+        self.api.save_session(self.path, self.catalog, self.history)
+        original = self.path.read_bytes()
+        for method_id, expected in (("raw-v1", "raw_samples_differ"), ("raw-v99", "unsupported_method")):
+            with self.subTest(method_id=method_id):
+                raw = json.loads(original)
+                record = raw["revisions"][-1]["state"]["raw_evidence"][0]
+                record["confirmation"]["samples"]["digest"] = "0" * 64
+                record["method_id"] = method_id
+                self.path.write_text(json.dumps(raw), encoding="utf-8")
+                catalog, history = self.api.load_session(self.path)
+                replay = history.replay_pick_evidence(catalog, "B01", "original")
+                self.assertEqual(replay.raw_samples, expected)
+                self.assertFalse(replay.attestation_current)
+
+    def test_v3_rejects_a_renamed_evidence_id_that_would_collide_with_a_future_capture(self):
+        self.apply_evidence()
+        self.api.save_session(self.path, self.catalog, self.history)
+        original = self.path.read_bytes()
+        for invalid in ("raw-2", "other-1"):
+            with self.subTest(evidence_id=invalid):
+                raw = json.loads(original)
+                state = raw["revisions"][1]["state"]
+                state["raw_evidence"][0]["evidence_id"] = invalid
+                state["pick_decisions"][0]["evidence_id"] = invalid
+                self.path.write_text(json.dumps(raw), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "evidence ID"):
+                    self.api.load_session(self.path)
+
     def test_fresh_process_recomputes_applied_revision_and_replays_undo_redo(self):
         self.apply_nudge()
         self.api.save_session(self.path, self.catalog, self.history)
@@ -191,6 +320,96 @@ print(json.dumps([
 
 
 class HistoricalSessionTest(unittest.TestCase):
+    def test_frozen_v3_paired_fixture_resaves_without_wire_or_replay_changes(self):
+        from seisslate.session import load_session, save_session
+
+        fixture = HISTORICAL / "v3-paired.session.json"
+        original = fixture.read_bytes()
+        document = json.loads(original)
+        state_keys = {
+            "blows", "masks", "receivers", "timing_evidence", "groups", "pick_decisions", "interval_actions",
+            "raw_evidence", "rms",
+        }
+        self.assertEqual((document["schema_version"], document["mode"], document["cursor"]), (3, "paired", 1))
+        for revision in document["revisions"]:
+            self.assertEqual(set(revision["state"]), state_keys)
+            self.assertIsNone(revision["state"]["rms"])
+        catalog, history = load_session(fixture)
+        self.assertEqual(tuple(revision.revision_id for revision in history.revisions), (0, 1))
+        decision = history.current.state.pick_decisions[0]
+        self.assertEqual((decision.status, decision.reviewed_ref.sample_index, decision.evidence_id), ("accepted", 360, "raw-1"))
+        self.assertTrue(history.replay_pick_evidence(catalog, "B01", "original").attestation_current)
+        with TemporaryDirectory() as directory:
+            folder = Path(directory)
+            copied = folder / "review-evidence"
+            copied.mkdir()
+            shutil.copytree(FIXTURE, folder / "synthetic")
+            reopened_catalog, reopened_history = load_session(fixture, relink={
+                source.sha256: folder / "synthetic" / source.path.name for source in catalog.sources
+            })
+            rewritten = copied / fixture.name
+            save_session(rewritten, reopened_catalog, reopened_history)
+            self.assertEqual(json.loads(rewritten.read_bytes()), document)
+        self.assertEqual(fixture.read_bytes(), original)
+
+    def test_initial_snapshot_accepts_baseline_masks_but_rejects_recorded_actions(self):
+        from seisslate.session import load_session
+
+        fixture = HISTORICAL / "v3-paired.session.json"
+        document = json.loads(fixture.read_bytes())
+        initial = document["revisions"][0]["state"]
+        applied = document["revisions"][1]["state"]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / fixture.name
+            relink = {
+                source["sha256"]: FIXTURE / Path(source["path"]).name for source in document["sources"]
+            }
+            # The existing action is falsely carried forward from a baseline with empty masks.
+            initial["interval_actions"] = applied["interval_actions"]
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "initial.*interval actions"):
+                load_session(path, relink=relink)
+
+            initial["interval_actions"] = applied["interval_actions"] = []
+            initial["masks"] = applied["masks"]
+            path.write_text(json.dumps(document), encoding="utf-8")
+            _, history = load_session(path, relink=relink)
+            self.assertEqual(len(history.revisions[0].state.masks), 1)
+
+    def test_upgraded_v1_and_v2_reopen_in_fresh_process_with_exact_fit_exports(self):
+        from seisslate.session import load_session, save_session
+
+        with TemporaryDirectory() as directory:
+            folder = Path(directory)
+            for version in (1, 2):
+                with self.subTest(version=version):
+                    source = HISTORICAL / f"v{version}.session.json"
+                    original = source.read_bytes()
+                    catalog, history = load_session(source)
+                    upgraded = folder / f"v{version}-upgraded.json"
+                    save_session(upgraded, catalog, history)
+                    self.assertEqual(json.loads(upgraded.read_bytes())["schema_version"], 3)
+                    self.assertEqual(load_session(upgraded)[1].revisions, history.revisions)
+                    self.assertEqual(source.read_bytes(), original)
+                    subprocess.run(
+                        [sys.executable, "-B", "-c", """
+import sys
+from pathlib import Path
+from seisslate.session import export_csv, load_session
+
+catalog, history = load_session(sys.argv[1])
+assert (history.cursor, history.current.revision_id, history.next_revision_id) == (1, 1, 4)
+assert history.current.state.blow('B01').original.reviewed_ref.sample_index == 361
+out = Path(sys.argv[1]).parent
+export_csv(out / 'applied.fit.csv', catalog, history)
+assert history.redo().revision_id == 3
+export_csv(out / 'redo.fit.csv', catalog, history)
+""", str(upgraded)],
+                        check=True, capture_output=True, text=True,
+                    )
+                    for filename in ("applied.fit.csv", "redo.fit.csv"):
+                        self.assertEqual((folder / filename).read_bytes(), (HISTORICAL / filename).read_bytes())
+
     def test_historical_sessions_restore_applied_edits_and_unapplied_redo(self):
         from seisslate.session import load_session
 

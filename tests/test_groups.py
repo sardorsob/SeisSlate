@@ -192,7 +192,7 @@ class GroupTest(unittest.TestCase):
         self.assertEqual(reopened.undo().state.groups, groups)
         self.assertEqual(reopened.redo().state.blows[0].group_id, "G1")
         document = json.loads(path.read_text())
-        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(document["schema_version"], 3)
 
         for field, bad_value in (("group_id", "missing"), ("group_id", 5)):
             with self.subTest(field=field, value=bad_value):

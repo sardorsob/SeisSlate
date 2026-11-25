@@ -312,7 +312,7 @@ class ReviewTests(unittest.TestCase):
         reviewed_group = self.api.set_group_reviewed(reviewed, "G1", True)
         self.assertEqual(reviewed_group.pick_decisions, (decision,))
 
-    def test_legacy_save_omits_preview_and_rejects_applied_records_even_beyond_cursor(self):
+    def test_save_omits_preview_but_keeps_applied_decisions_beyond_cursor(self):
         from seisslate.evidence import PickDecision
         from seisslate.session import load_session, save_session
 
@@ -323,14 +323,14 @@ class ReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "session.json"
             save_session(path, self.catalog, history)
-            saved = path.read_bytes()
             _, reopened = load_session(path)
             self.assertEqual(reopened.current.state, self.state)
             history.apply()
             history.undo()
-            with self.assertRaises(ValueError):
-                save_session(path, self.catalog, history)
-            self.assertEqual(path.read_bytes(), saved)
+            save_session(path, self.catalog, history)
+            _, reopened = load_session(path)
+            self.assertEqual(reopened.current.state, self.state)
+            self.assertEqual(reopened.redo().state.pick_decisions, (decision,))
 
     def test_missing_reviewed_pick_can_be_supplied_without_changing_its_partner(self):
         blow = self.state.blows[2]

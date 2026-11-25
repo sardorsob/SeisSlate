@@ -194,10 +194,12 @@ class RawEvidence:
     method_id: str = RAW_METHOD_ID
 
     def __post_init__(self) -> None:
-        if not all(type(text) is str and text.strip() for text in (self.evidence_id, self.method_id)):
-            raise ValueError("Raw evidence requires IDs for the record and method")
+        if type(self.method_id) is not str or not self.method_id.strip():
+            raise ValueError("Raw evidence requires a method ID")
         if type(self.applied_revision_id) is not int or self.applied_revision_id <= 0:
             raise ValueError("Raw evidence requires an applied revision")
+        if self.evidence_id != f"raw-{self.applied_revision_id}":
+            raise ValueError("Raw evidence ID must identify its applied revision")
         if type(self.captured_utc_ns) is not int:
             raise ValueError("Capture time must be integer UTC nanoseconds")
         versions = tuple(self.software_versions)
