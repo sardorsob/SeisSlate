@@ -298,8 +298,8 @@ def save_session(path: Path | str, catalog: SourceCatalog, history: ReviewHistor
     path = Path(path)
     revisions = []
     for revision in history.revisions:
-        if revision.state.pick_decisions or revision.state.interval_actions:
-            raise ValueError("Session version 2 cannot save pick decisions or interval actions")
+        if revision.state.pick_decisions or revision.state.interval_actions or revision.state.raw_evidence:
+            raise ValueError("Session version 2 cannot save pick decisions, interval actions or raw evidence")
         record = asdict(revision)
         record["state"] = {key: val for key, val in record["state"].items() if key in _V2_STATE_KEYS}
         revisions.append(record)

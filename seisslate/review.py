@@ -6,8 +6,12 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from math import isfinite
 from typing import Iterable, Literal
+from weakref import ReferenceType, ref as weakref
 
-from .evidence import ROLES, IntervalAction, IntervalEdit, PickDecision, require_reason, validate_span
+from .evidence import (
+    ROLES, IntervalAction, IntervalEdit, PickDecision, RawConfirmation, RawEvidence, RawEvidenceView,
+    RawReplay, confirm_pick_evidence, inspect_raw_evidence, require_reason, validate_span,
+)
 from .evidence import Role as Role
 from .groups import GroupWindow
 from .sources import SampleRef, SampleSpan, SourceCatalog
@@ -73,6 +77,7 @@ class ReviewState:
     groups: tuple[GroupWindow, ...] = ()
     pick_decisions: tuple[PickDecision, ...] = ()
     interval_actions: tuple[IntervalAction, ...] = ()
+    raw_evidence: tuple[RawEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "blows", tuple(self.blows))
@@ -81,6 +86,7 @@ class ReviewState:
         object.__setattr__(self, "groups", tuple(self.groups))
         object.__setattr__(self, "pick_decisions", tuple(self.pick_decisions))
         object.__setattr__(self, "interval_actions", tuple(self.interval_actions))
+        object.__setattr__(self, "raw_evidence", tuple(self.raw_evidence))
         if len({blow.blow_id for blow in self.blows}) != len(self.blows):
             raise ValueError("Blow IDs must be unique")
         group_ids = {group.group_id for group in self.groups}
@@ -97,6 +103,9 @@ class ReviewState:
                 not first.source_hash or not second.source_hash or first.source_hash == second.source_hash
             ):
                 raise ValueError("Receivers with the same channel ID need distinct source fingerprints")
+        records = {record.evidence_id: record for record in self.raw_evidence}
+        if len(records) != len(self.raw_evidence):
+            raise ValueError("Raw evidence IDs must be unique")
         if self.pick_decisions:
             if len({decision.target for decision in self.pick_decisions}) != len(self.pick_decisions):
                 raise ValueError("Pick decision targets must be unique")
@@ -105,6 +114,10 @@ class ReviewState:
                 target_blow = blows.get(decision.blow_id)
                 if target_blow is None or getattr(target_blow, decision.role).reviewed_ref != decision.reviewed_ref:
                     raise ValueError("Pick decision must match the reviewed sample for its blow and receiver")
+                if decision.evidence_id is not None:
+                    record = records.get(decision.evidence_id)
+                    if record is None or record.confirmation.decision != replace(decision, evidence_id=None):
+                        raise ValueError("Pick decision must match its linked raw evidence")
 
     def blow(self, blow_id: str) -> Blow:
         for blow in self.blows:
@@ -406,6 +419,30 @@ def _validate_transition(before: ReviewState, after: ReviewState) -> None:
                 raise ValueError(f"A review edit cannot rewrite imported picks for blow {old.blow_id}")
 
 
+def _validate_applied_revision(before: ReviewState | None, revision: Revision) -> None:
+    previous_records = before.raw_evidence if before is not None else ()
+    state = revision.state
+    if state.raw_evidence[:len(previous_records)] != previous_records:
+        raise ValueError("A review edit cannot rewrite captured raw evidence")
+    new_records = state.raw_evidence[len(previous_records):]
+    if any(record.applied_revision_id != revision.revision_id for record in new_records):
+        raise ValueError("New raw evidence must originate in its applied revision")
+    previous_decisions = set(before.pick_decisions) if before is not None else set()
+    new_links = set()
+    for decision in state.pick_decisions:
+        if decision.evidence_id is None:
+            if decision.status == "accepted" or decision.inspection_span is not None:
+                raise ValueError("This pick decision requires a confirmed raw capture")
+        elif decision not in previous_decisions:
+            new_links.add(decision.evidence_id)
+    if new_links != {record.evidence_id for record in new_records}:
+        raise ValueError("A new evidence link must match a decision captured in the same revision")
+
+
+def _overlaps_support(support: SampleSpan, span: SampleSpan) -> bool:
+    return support.segment_id == span.segment_id and max(support.start, span.start) < min(support.stop, span.stop)
+
+
 class ReviewHistory:
     """One applied revision cursor and an optional uncommitted preview."""
 
@@ -420,10 +457,12 @@ class ReviewHistory:
         timeline = tuple(revisions) if revisions is not None else (Revision(0, initial, "Initial review"),)
         if not timeline or timeline[0].revision_id != 0 or timeline[0].state != initial:
             raise ValueError("Review history needs the original revision as its first snapshot")
+        _validate_applied_revision(None, timeline[0])
         for previous, following in zip(timeline, timeline[1:]):
             if type(following.revision_id) is not int or following.revision_id <= previous.revision_id:
                 raise ValueError("Revision IDs must increase")
             _validate_transition(previous.state, following.state)
+            _validate_applied_revision(previous.state, following)
         cursor = len(timeline) - 1 if cursor is None else cursor
         if type(cursor) is not int or not 0 <= cursor < len(timeline):
             raise ValueError("Review cursor is outside the revision history")
@@ -434,6 +473,7 @@ class ReviewHistory:
         self._cursor = cursor
         self._next_revision_id = next_revision_id
         self._draft: Revision | None = None
+        self._confirmed_draft: tuple[ReferenceType[ReviewHistory], Revision, RawConfirmation] | None = None
 
     @property
     def current(self) -> Revision:
@@ -465,19 +505,89 @@ class ReviewHistory:
 
     def preview(self, state: ReviewState, reason: str) -> Revision:
         _validate_transition(self.current.state, state)
+        if state.raw_evidence != self.current.state.raw_evidence:
+            raise ValueError("Raw evidence can only be captured at Apply")
         self._draft = Revision(self._next_revision_id, state, reason)
+        self._confirmed_draft = None
         return self._draft
 
     def cancel(self) -> None:
         self._draft = None
+        self._confirmed_draft = None
 
     def apply(self) -> Revision:
-        if self._draft is not None and self._draft.state != self.current.state:
-            self._revisions = self._revisions[:self._cursor + 1] + (self._draft,)
+        return self._apply(self._draft)
+
+    def confirm_current_pick_evidence(
+        self, catalog: SourceCatalog, decision: PickDecision, view: RawEvidenceView,
+    ) -> RawConfirmation:
+        """Bind the reviewer's confirmation to this draft until it is replaced or closed."""
+        draft = self._draft
+        if draft is None or decision not in draft.state.pick_decisions:
+            raise ValueError("The decision to confirm must belong to the current review draft")
+        confirmation = confirm_pick_evidence(catalog, decision, view)
+        self._confirmed_draft = weakref(self), draft, confirmation
+        return confirmation
+
+    def apply_with_evidence(
+        self, catalog: SourceCatalog, confirmation: RawConfirmation, current_view: RawEvidenceView | None, *,
+        captured_utc_ns: int, software_versions: tuple[tuple[str, str], ...],
+    ) -> Revision:
+        """Revalidate one confirmed draft and commit it together with its raw capture."""
+        draft = self._draft
+        live = self._confirmed_draft
+        if (
+            draft is None or live is None or live[0]() is not self
+            or live[1] is not draft or live[2] is not confirmation
+        ):
+            raise ValueError("Confirm the current review draft before Apply")
+        if current_view is None or current_view != confirmation.view:
+            raise ValueError("The raw view changed. Confirm the current raw view before Apply")
+        if confirm_pick_evidence(catalog, confirmation.decision, current_view) != confirmation:
+            raise ValueError("The raw samples or grid changed after confirmation")
+
+        record = RawEvidence(
+            f"raw-{draft.revision_id}", draft.revision_id, confirmation, captured_utc_ns, software_versions,
+        )
+        staged = replace(draft.state, raw_evidence=draft.state.raw_evidence + (record,))
+        linked = replace(confirmation.decision, evidence_id=record.evidence_id)
+        return self._apply(replace(draft, state=set_pick_decision(staged, catalog, linked)))
+
+    def _apply(self, draft: Revision | None) -> Revision:
+        if draft is not None and draft.state != self.current.state:
+            _validate_applied_revision(self.current.state, draft)
+            self._revisions = self._revisions[:self._cursor + 1] + (draft,)
             self._cursor += 1
             self._next_revision_id += 1
         self.cancel()
         return self.current
+
+    def replay_pick_evidence(
+        self, catalog: SourceCatalog, blow_id: str, role: Role, *, view: RawEvidenceView | None = None,
+    ) -> RawReplay:
+        """Report the current decision's raw replay and later mask changes independently."""
+        decision = next((item for item in self.current.state.pick_decisions if item.target == (blow_id, role)), None)
+        if decision is None or decision.evidence_id is None:
+            return RawReplay()
+        record = next(item for item in self.current.state.raw_evidence if item.evidence_id == decision.evidence_id)
+        replay = inspect_raw_evidence(catalog, record, view=view)
+        return replace(replay, masks_changed=self._masks_changed_after(record))
+
+    def _masks_changed_after(self, record: RawEvidence) -> bool:
+        support = record.confirmation.view.span
+        for index in range(1, self._cursor + 1):
+            revision = self._revisions[index]
+            if revision.revision_id <= record.applied_revision_id:
+                continue
+            before, after = self._revisions[index - 1].state, revision.state
+            new_actions = after.interval_actions[len(before.interval_actions):]
+            if any(_overlaps_support(support, span) for action in new_actions for span in action.spans):
+                return True
+            if before.masks != after.masks:
+                changed = _subtract_spans(before.masks, after.masks) + _subtract_spans(after.masks, before.masks)
+                if any(_overlaps_support(support, span) for span in changed):
+                    return True
+        return False
 
     def undo(self) -> Revision:
         if self._draft is not None:

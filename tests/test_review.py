@@ -263,7 +263,7 @@ class ReviewTests(unittest.TestCase):
 
         history = self.api.ReviewHistory(self.state)
         point = self.original.ref(360)
-        decision = PickDecision("B01", "original", point, "accepted", reason="Visible onset", reviewer="Analyst")
+        decision = PickDecision("B01", "original", point, "candidate", reason="Visible onset", reviewer="Analyst")
         staged = self.api.set_pick_decision(self.state, self.catalog, decision)
         span = (SampleSpan(self.original.segment_id, 350, 352),)
         staged = self.api.mask_spans(staged, span, catalog=self.catalog, reason="Spurious precursor")
