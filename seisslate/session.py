@@ -22,6 +22,8 @@ from .sources import SampleRef, SampleSpan, SourceCatalog, SourceIdentityError, 
 
 
 SCHEMA_VERSION = 2
+_V1_STATE_KEYS = {"blows", "masks", "receivers", "timing_evidence"}
+_V2_STATE_KEYS = _V1_STATE_KEYS | {"groups"}
 
 
 class SessionSourceError(ValueError):
@@ -123,7 +125,7 @@ def _receiver(raw: object) -> Receiver:
 
 def _revision(raw: object, schema_version: int) -> Revision:
     value = _record(raw, Revision)
-    state = _record(value["state"], ReviewState, omitted=("groups",) if schema_version == 1 else ())
+    state = _object(value["state"], "ReviewState", _V1_STATE_KEYS if schema_version == 1 else _V2_STATE_KEYS)
     return Revision(
         _require(value["revision_id"], int, "revision ID"),
         ReviewState(
@@ -294,6 +296,13 @@ def _recorded_path(source: Path, parent: Path) -> str:
 def save_session(path: Path | str, catalog: SourceCatalog, history: ReviewHistory) -> None:
     """Atomically save committed history and its applied cursor. Draft edits stay in memory."""
     path = Path(path)
+    revisions = []
+    for revision in history.revisions:
+        if revision.state.pick_decisions or revision.state.interval_actions:
+            raise ValueError("Session version 2 cannot save pick decisions or interval actions")
+        record = asdict(revision)
+        record["state"] = {key: val for key, val in record["state"].items() if key in _V2_STATE_KEYS}
+        revisions.append(record)
     _validate_references(catalog, history)
     parent = path.parent.resolve()
     sources = [
@@ -308,7 +317,7 @@ def save_session(path: Path | str, catalog: SourceCatalog, history: ReviewHistor
         "schema_version": SCHEMA_VERSION,
         "method_version": METHOD_VERSION,
         "sources": sources,
-        "revisions": [asdict(revision) for revision in history.revisions],
+        "revisions": revisions,
         "cursor": history.cursor,
         "next_revision_id": history.next_revision_id,
     }

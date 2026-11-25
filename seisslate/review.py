@@ -7,13 +7,13 @@ from dataclasses import dataclass, replace
 from math import isfinite
 from typing import Iterable, Literal
 
+from .evidence import ROLES, IntervalAction, IntervalEdit, PickDecision, require_reason, validate_span
+from .evidence import Role as Role
 from .groups import GroupWindow
 from .sources import SampleRef, SampleSpan, SourceCatalog
 
 
-Role = Literal["original", "calibration"]
 PairStatus = Literal["confirmed", "ambiguous", "unmatched"]
-_ROLES = ("original", "calibration")
 _PAIR_STATUSES = ("confirmed", "ambiguous", "unmatched")
 
 
@@ -71,12 +71,16 @@ class ReviewState:
     receivers: tuple[Receiver, ...] = ()
     timing_evidence: str = ""
     groups: tuple[GroupWindow, ...] = ()
+    pick_decisions: tuple[PickDecision, ...] = ()
+    interval_actions: tuple[IntervalAction, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "blows", tuple(self.blows))
         object.__setattr__(self, "masks", _merge_spans(self.masks))
         object.__setattr__(self, "receivers", tuple(self.receivers))
         object.__setattr__(self, "groups", tuple(self.groups))
+        object.__setattr__(self, "pick_decisions", tuple(self.pick_decisions))
+        object.__setattr__(self, "interval_actions", tuple(self.interval_actions))
         if len({blow.blow_id for blow in self.blows}) != len(self.blows):
             raise ValueError("Blow IDs must be unique")
         group_ids = {group.group_id for group in self.groups}
@@ -93,6 +97,14 @@ class ReviewState:
                 not first.source_hash or not second.source_hash or first.source_hash == second.source_hash
             ):
                 raise ValueError("Receivers with the same channel ID need distinct source fingerprints")
+        if self.pick_decisions:
+            if len({decision.target for decision in self.pick_decisions}) != len(self.pick_decisions):
+                raise ValueError("Pick decision targets must be unique")
+            blows = {blow.blow_id: blow for blow in self.blows}
+            for decision in self.pick_decisions:
+                target_blow = blows.get(decision.blow_id)
+                if target_blow is None or getattr(target_blow, decision.role).reviewed_ref != decision.reviewed_ref:
+                    raise ValueError("Pick decision must match the reviewed sample for its blow and receiver")
 
     def blow(self, blow_id: str) -> Blow:
         for blow in self.blows:
@@ -112,7 +124,7 @@ class ReviewState:
 
 
 def _validate_role(role: Role) -> None:
-    if role not in _ROLES:
+    if role not in ROLES:
         raise ValueError(f"Unknown receiver role {role}")
 
 
@@ -141,10 +153,51 @@ def _replace_blow(state: ReviewState, change: Blow) -> ReviewState:
     return replace(state, blows=tuple(change if blow.blow_id == change.blow_id else blow for blow in state.blows))
 
 
+def set_pick_decision(state: ReviewState, catalog: SourceCatalog, decision: PickDecision) -> ReviewState:
+    """Review the current point or record why a receiver has no reviewed point."""
+    pick = getattr(state.blow(decision.blow_id), decision.role)
+    if pick.reviewed_ref != decision.reviewed_ref:
+        raise ValueError("Pick decision must match the reviewed sample for its blow and receiver")
+    for ref in (decision.reviewed_ref, decision.lower_ref, decision.upper_ref):
+        if ref is not None:
+            catalog.segment(ref)
+
+    receiver = state.receiver(decision.role)
+    prior = pick.original_ref or pick.reviewed_ref
+    channel = receiver.channel if receiver else prior.channel if prior else None
+    source_hash = (receiver.source_hash if receiver else "") or (prior.source_hash if prior else "")
+    identities = {
+        (segment.source_hash, segment.channel) for segment in catalog.segments
+        if segment.channel == channel and (not source_hash or segment.source_hash == source_hash)
+    }
+    if channel is not None and len(identities) != 1:
+        raise ValueError("Pick decision receiver must identify one source channel")
+    point = decision.reviewed_ref
+    if point is not None and (point.source_hash, point.channel) not in identities:
+        raise ValueError("Pick decision is outside the requested receiver's recording")
+    span = decision.inspection_span
+    if span is not None:
+        validate_span(catalog, span)
+        segment = catalog.segment(span.segment_id)
+        if (segment.source_hash, segment.channel) not in identities:
+            raise ValueError("Inspection span is outside the requested receiver's recording")
+        if point is None:
+            intended = decision.intended_utc_ns
+            start = segment.start_ns + span.start * segment.period_ns
+            stop = segment.start_ns + span.stop * segment.period_ns
+            if intended is None or not start <= intended < stop:
+                raise ValueError("Inspection span must cover the intended UTC of an unresolved decision")
+
+    decisions = {previous.target: previous for previous in state.pick_decisions}
+    decisions[decision.target] = decision
+    return replace(state, pick_decisions=tuple(decisions.values()))
+
+
 def move_pick(
-    state: ReviewState, catalog: SourceCatalog, blow_id: str, role: Role, ref: SampleRef | None
+    state: ReviewState, catalog: SourceCatalog, blow_id: str, role: Role, ref: SampleRef | None,
+    *, decision: PickDecision | None = None,
 ) -> ReviewState:
-    """Move one reviewed pick to a validated sample, or clear its reviewed value."""
+    """Move or clear a pick, invalidating its decision unless explicitly replaced."""
     receiver = state.receiver(role)
     blow = state.blow(blow_id)
     pick = getattr(blow, role)
@@ -158,9 +211,18 @@ def move_pick(
             source_hash = receiver.source_hash or source_hash
         if (channel and ref.channel != channel) or (source_hash and ref.source_hash != source_hash):
             raise ValueError("Sample reference is outside the requested receiver's recording")
-    reviewed = replace(pick, reviewed_ref=ref)
-    updated = replace(blow, original=reviewed) if role == "original" else replace(blow, calibration=reviewed)
-    return _replace_blow(state, updated)
+    target = (blow_id, role)
+    if decision is not None and decision.target != target:
+        raise ValueError("A replacement decision must target the moved pick")
+    if ref != pick.reviewed_ref:
+        reviewed = replace(pick, reviewed_ref=ref)
+        updated = replace(blow, original=reviewed) if role == "original" else replace(blow, calibration=reviewed)
+        state = replace(
+            state,
+            blows=tuple(updated if other.blow_id == blow_id else other for other in state.blows),
+            pick_decisions=tuple(previous for previous in state.pick_decisions if previous.target != target),
+        )
+    return state if decision is None else set_pick_decision(state, catalog, decision)
 
 
 def nudge_pick(state: ReviewState, catalog: SourceCatalog, blow_id: str, role: Role, step: int) -> ReviewState:
@@ -185,33 +247,77 @@ def _merge_spans(spans: Iterable[SampleSpan]) -> tuple[SampleSpan, ...]:
     return tuple(merged)
 
 
-def mask_spans(state: ReviewState, spans: Iterable[SampleSpan]) -> ReviewState:
-    return replace(state, masks=state.masks + tuple(spans))
-
-
-def restore_spans(state: ReviewState, spans: Iterable[SampleSpan]) -> ReviewState:
-    by_segment = defaultdict(list)
-    for span in _merge_spans(spans):
+def _subtract_spans(spans: Iterable[SampleSpan], removed: Iterable[SampleSpan]) -> tuple[SampleSpan, ...]:
+    by_segment: dict[str, list[SampleSpan]] = defaultdict(list)
+    for span in removed:
         by_segment[span.segment_id].append(span)
     remaining = []
-    for masked in state.masks:
-        start = masked.start
-        for restored in by_segment.get(masked.segment_id, ()):
-            if restored.stop <= start:
+    for span in spans:
+        start = span.start
+        for excluded in by_segment.get(span.segment_id, ()):
+            if excluded.stop <= start:
                 continue
-            if restored.start >= masked.stop:
+            if excluded.start >= span.stop:
                 break
-            if start < restored.start:
-                remaining.append(SampleSpan(masked.segment_id, start, restored.start))
-            start = restored.stop
-        if start < masked.stop:
-            remaining.append(SampleSpan(masked.segment_id, start, masked.stop))
-    return replace(state, masks=tuple(remaining))
+            if start < excluded.start:
+                remaining.append(SampleSpan(span.segment_id, start, excluded.start))
+            start = excluded.stop
+        if start < span.stop:
+            remaining.append(SampleSpan(span.segment_id, start, span.stop))
+    return tuple(remaining)
+
+
+def _edit_masks(
+    masks: tuple[SampleSpan, ...], selection: tuple[SampleSpan, ...], action: IntervalEdit,
+) -> tuple[SampleSpan, ...]:
+    return _merge_spans(masks + selection) if action == "mask" else _subtract_spans(masks, selection)
+
+
+def _mask_delta(
+    before: tuple[SampleSpan, ...], after: tuple[SampleSpan, ...], action: IntervalEdit,
+) -> tuple[SampleSpan, ...]:
+    return _subtract_spans(after, before) if action == "mask" else _subtract_spans(before, after)
+
+
+def _edit_intervals(
+    state: ReviewState, spans: Iterable[SampleSpan], action: IntervalEdit,
+    catalog: SourceCatalog | None, reason: str | None,
+) -> ReviewState:
+    selection = _merge_spans(spans)
+    if reason is not None or catalog is not None:
+        if reason is None or catalog is None:
+            raise ValueError("A reasoned interval edit requires a catalog and a reason")
+        require_reason(reason, "An interval action")
+        for span in selection:
+            validate_span(catalog, span)
+
+    masks = _edit_masks(state.masks, selection, action)
+    if masks == state.masks:
+        return state
+    actions = state.interval_actions
+    if reason is not None:
+        changed = _mask_delta(state.masks, masks, action)
+        actions += (IntervalAction(action, changed, reason),)
+    return replace(state, masks=masks, interval_actions=actions)
+
+
+def mask_spans(
+    state: ReviewState, spans: Iterable[SampleSpan], *, catalog: SourceCatalog | None = None,
+    reason: str | None = None,
+) -> ReviewState:
+    return _edit_intervals(state, spans, "mask", catalog, reason)
+
+
+def restore_spans(
+    state: ReviewState, spans: Iterable[SampleSpan], *, catalog: SourceCatalog | None = None,
+    reason: str | None = None,
+) -> ReviewState:
+    return _edit_intervals(state, spans, "restore", catalog, reason)
 
 
 def set_inclusion(state: ReviewState, blow_id: str, included: bool, reason: str) -> ReviewState:
-    if not included and not reason.strip():
-        raise ValueError("A fit exclusion requires a reason")
+    if not included:
+        require_reason(reason, "A fit exclusion")
     return _replace_blow(state, replace(state.blow(blow_id), included=included, reason=reason))
 
 
@@ -276,12 +382,24 @@ def _validate_transition(before: ReviewState, after: ReviewState) -> None:
     for old_group, new_group in zip(before.groups, after.groups):
         if old_group is not new_group and old_group != replace(new_group, reviewed=old_group.reviewed):
             raise ValueError(f"A review edit cannot rewrite imported group metadata for {old_group.group_id!r}")
+    action_count = len(before.interval_actions)
+    if after.interval_actions[:action_count] != before.interval_actions:
+        raise ValueError("A review edit cannot rewrite recorded interval actions")
+    if len(after.interval_actions) > action_count:
+        masks = before.masks
+        for action in after.interval_actions[action_count:]:
+            updated = _edit_masks(masks, _merge_spans(action.spans), action.action)
+            if _mask_delta(masks, updated, action.action) != action.spans:
+                raise ValueError("An interval action must describe exactly the samples it changes")
+            masks = updated
+        if masks != after.masks:
+            raise ValueError("Interval actions must account for the mask changes in their revision")
     after_by_id = {blow.blow_id: blow for blow in after.blows}
     for old in before.blows:
         new = after_by_id.get(old.blow_id)
         if new is None:
             raise ValueError(f"A review edit cannot remove blow {old.blow_id}")
-        for role in _ROLES:
+        for role in ROLES:
             before_pick = getattr(old, role)
             after_pick = getattr(new, role)
             if before_pick.imported_ns != after_pick.imported_ns or before_pick.original_ref != after_pick.original_ref:

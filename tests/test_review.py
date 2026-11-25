@@ -3,9 +3,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
+import numpy as np
 from obspy import read
 
-from seisslate.sources import SampleSpan, SourceCatalog, load_source
+from seisslate.sources import SampleSpan, Segment, Source, SourceCatalog, load_source
 
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
@@ -93,6 +94,243 @@ class ReviewTests(unittest.TestCase):
         self.assertFalse(restored.is_masked(self.original.ref(360)))
         self.assertTrue(restored.is_masked(self.original.ref(362)))
         self.assertEqual(restored.blows, self.state.blows)
+
+    def test_reasoned_interval_actions_record_only_samples_that_changed(self):
+        segment_id = self.original.segment_id
+        legacy = self.api.mask_spans(self.state, (SampleSpan(segment_id, 353, 355),))
+        selection = (SampleSpan(segment_id, 351, 358),)
+        masked = self.api.mask_spans(legacy, selection, catalog=self.catalog, reason="Suspected clipping")
+        self.assertEqual(masked.masks, (SampleSpan(segment_id, 351, 358),))
+        (mask,) = masked.interval_actions
+        self.assertEqual((mask.action, mask.reason, mask.spans), (
+            "mask", "Suspected clipping", (SampleSpan(segment_id, 351, 353), SampleSpan(segment_id, 355, 358)),
+        ))
+        self.assertEqual(self.api.mask_spans(masked, selection, catalog=self.catalog, reason="Again"), masked)
+
+        restored = self.api.restore_spans(
+            masked, (SampleSpan(segment_id, 356, 361),), catalog=self.catalog, reason="Review cleared tail",
+        )
+        self.assertEqual(restored.masks, (SampleSpan(segment_id, 351, 356),))
+        previous, restore = restored.interval_actions
+        self.assertEqual(previous, mask)
+        self.assertEqual((restore.action, restore.reason, restore.spans), (
+            "restore", "Review cleared tail", (SampleSpan(segment_id, 356, 358),),
+        ))
+        self.assertEqual(self.api.restore_spans(
+            restored, (SampleSpan(segment_id, 356, 361),), catalog=self.catalog, reason="Again",
+        ), restored)
+
+    def test_reasoned_interval_commands_reject_blanks_and_invalid_catalog_spans(self):
+        valid = SampleSpan(self.original.segment_id, 350, 360)
+        for action in (self.api.mask_spans, self.api.restore_spans):
+            for span, reason in (
+                (valid, " \t "),
+                (SampleSpan("absent", 350, 360), "Note"),
+                (SampleSpan(self.original.segment_id, 2149, 2151), "Note"),
+            ):
+                with self.subTest(action=action.__name__, span=span, reason=reason), self.assertRaises(ValueError):
+                    action(self.state, (span,), catalog=self.catalog, reason=reason)
+
+    def test_pick_move_preserves_same_point_decision_and_replaces_moved_decision_atomically(self):
+        from seisslate.evidence import PickDecision
+
+        point = self.original.ref(360)
+        decision = PickDecision(
+            "B01", "original", point, "accepted", lower_ref=self.original.ref(359), upper_ref=point,
+            reason="Sharp onset", reviewer="Analyst",
+        )
+        accepted = self.api.set_pick_decision(self.state, self.catalog, decision)
+        self.assertEqual(self.api.move_pick(accepted, self.catalog, "B01", "original", point), accepted)
+
+        next_point = self.original.ref(361)
+        nudged = self.api.nudge_pick(accepted, self.catalog, "B01", "original", 1)
+        self.assertEqual(nudged.blows[0].original.reviewed_ref, next_point)
+        self.assertEqual(nudged.pick_decisions, ())
+        self.assertEqual(nudged.blows[0].original.original_ref, point)
+
+        replacement = replace(decision, reviewed_ref=next_point, lower_ref=next_point, upper_ref=next_point)
+        replaced = self.api.move_pick(accepted, self.catalog, "B01", "original", next_point, decision=replacement)
+        self.assertEqual(replaced.blows, nudged.blows)
+        self.assertEqual(replaced.pick_decisions, (replacement,))
+        with self.assertRaises(ValueError):
+            self.api.move_pick(accepted, self.catalog, "B01", "original", next_point, decision=decision)
+        cleared = self.api.move_pick(replaced, self.catalog, "B01", "original", None)
+        self.assertIsNone(cleared.blows[0].original.reviewed_ref)
+        self.assertEqual(cleared.pick_decisions, ())
+        self.assertEqual(cleared.blows[0].original.original_ref, point)
+
+    def test_decision_targets_and_catalog_references_are_validated(self):
+        from seisslate.evidence import PickDecision
+
+        point = self.original.ref(360)
+        decision = PickDecision("B01", "original", point, "candidate")
+        accepted = self.api.set_pick_decision(self.state, self.catalog, decision)
+        with self.assertRaises(ValueError):
+            replace(accepted, pick_decisions=(decision, decision))
+        for bad in (
+            replace(decision, blow_id="missing"),
+            replace(decision, role="calibration"),
+            replace(decision, reviewed_ref=self.original.ref(359)),
+            replace(decision, lower_ref=point, upper_ref=replace(point, sample_index=999_999)),
+        ):
+            with self.subTest(decision=bad), self.assertRaises(ValueError):
+                self.api.set_pick_decision(self.state, self.catalog, bad)
+        with self.assertRaises(ValueError):
+            replace(decision, role="receiver")
+
+    def test_missing_unresolved_intent_can_record_an_available_inspection_span(self):
+        from seisslate.evidence import PickDecision
+
+        decision = PickDecision(
+            "B07", "original", None, "unresolved", intended_utc_ns=EPOCH + 2145 * MS,
+            reason="No distinct onset", reviewer="Analyst",
+        )
+        unresolved = self.api.set_pick_decision(self.state, self.catalog, decision)
+        self.assertEqual(unresolved.pick_decisions, (decision,))
+        self.assertEqual(unresolved.blows, self.state.blows)
+
+        inspected = replace(decision, inspection_span=SampleSpan(self.original.segment_id, 2140, 2150))
+        inspected_state = self.api.set_pick_decision(unresolved, self.catalog, inspected)
+        self.assertEqual(inspected_state.pick_decisions, (inspected,))
+        with self.assertRaises(ValueError):
+            self.api.set_pick_decision(unresolved, self.catalog, replace(
+                inspected, inspection_span=SampleSpan(self.calibration.segment_id, 2140, 2150),
+            ))
+        with self.assertRaisesRegex(ValueError, "intended UTC"):
+            self.api.set_pick_decision(unresolved, self.catalog, replace(
+                inspected, inspection_span=SampleSpan(self.original.segment_id, 10, 20),
+            ))
+
+    def test_gap_intent_retains_the_role_and_utc_without_a_fabricated_sample(self):
+        from seisslate.evidence import PickDecision
+
+        intended = self.original.stop_ns
+        self.assertEqual(self.catalog.lookup(self.original.channel, intended).status, "gap")
+        decision = PickDecision(
+            "B07", "original", None, "unresolved", intended_utc_ns=intended,
+            reason="Receiver gap", reviewer="Analyst",
+        )
+        state = self.api.set_pick_decision(self.state, self.catalog, decision)
+        (record,) = state.pick_decisions
+        self.assertEqual((record.role, record.intended_utc_ns, record.reason), ("original", intended, "Receiver gap"))
+        self.assertIsNone(record.reviewed_ref)
+        self.assertIsNone(record.inspection_span)
+        self.assertIsNone(record.evidence_id)
+        with self.assertRaisesRegex(ValueError, "intended UTC"):
+            self.api.set_pick_decision(state, self.catalog, replace(
+                decision, inspection_span=SampleSpan(self.original.segment_id, 0, 10),
+            ))
+
+    def test_no_point_inspection_uses_unrounded_half_open_time_support(self):
+        from seisslate.evidence import PickDecision
+
+        segment = Segment("fractional", "XX.ORIG..EHZ", "fractional:0", 0, 400_000_000, np.arange(6))
+        catalog = SourceCatalog((Source(Path("fractional.mseed"), "fractional", 0, (segment,)),))
+        state = self.api.ReviewState(
+            (self.api.Blow("missing", self.api.Pick(None), self.api.Pick(None), None, None),),
+            receivers=(self.api.Receiver("original", segment.channel, segment.source_hash),),
+        )
+        # At a 2.5 ns period, sample 1 displays at 2 ns. Its exact boundary is 2.5 ns.
+        for start, stop, intended, inside in (
+            (1, 4, 2, False), (1, 4, 3, True), (1, 4, 9, True), (1, 4, 10, False), (0, 1, 2, True),
+        ):
+            with self.subTest(start=start, stop=stop, intended=intended):
+                decision = PickDecision(
+                    "missing", "original", None, "unresolved", intended_utc_ns=intended,
+                    reason="No distinct onset", inspection_span=SampleSpan(segment.segment_id, start, stop),
+                )
+                if inside:
+                    reviewed = self.api.set_pick_decision(state, catalog, decision)
+                    self.assertEqual(reviewed.pick_decisions, (decision,))
+                else:
+                    with self.assertRaisesRegex(ValueError, "intended UTC"):
+                        self.api.set_pick_decision(state, catalog, decision)
+
+    def test_interval_history_rejects_actions_that_claim_a_no_op_changed_samples(self):
+        from seisslate.evidence import IntervalAction
+
+        span = SampleSpan(self.original.segment_id, 350, 355)
+        state = self.api.mask_spans(self.state, (span,))
+        forged = replace(state, interval_actions=(IntervalAction("mask", (span,), "Already masked"),))
+        history = self.api.ReviewHistory(state)
+        with self.assertRaises(ValueError):
+            history.preview(forged, "Mask again")
+        self.assertIsNone(history.draft)
+        self.assertEqual(history.current.state, state)
+
+    def test_decision_and_interval_actions_follow_the_applied_history(self):
+        from seisslate.evidence import PickDecision
+
+        history = self.api.ReviewHistory(self.state)
+        point = self.original.ref(360)
+        decision = PickDecision("B01", "original", point, "accepted", reason="Visible onset", reviewer="Analyst")
+        staged = self.api.set_pick_decision(self.state, self.catalog, decision)
+        span = (SampleSpan(self.original.segment_id, 350, 352),)
+        staged = self.api.mask_spans(staged, span, catalog=self.catalog, reason="Spurious precursor")
+        preview = history.preview(staged, "Waveform review")
+        self.assertEqual(history.current.state, self.state)
+        history.cancel()
+        self.assertEqual(history.apply().state, self.state)
+
+        history.preview(staged, "Waveform review")
+        applied = history.apply()
+        self.assertEqual(applied, preview)
+        restaged = self.api.restore_spans(staged, span, catalog=self.catalog, reason="Precursor verified")
+        history.preview(restaged, "Restore interval")
+        restored = history.apply()
+        self.assertEqual(history.undo(), applied)
+        self.assertEqual(history.redo(), restored)
+        self.assertEqual(history.undo(), applied)
+        branch = self.api.move_pick(staged, self.catalog, "B01", "original", None)
+        history.preview(branch, "Clear arrival")
+        branched = history.apply()
+        self.assertGreater(branched.revision_id, restored.revision_id)
+        self.assertEqual(branched.state.interval_actions, applied.state.interval_actions)
+        self.assertEqual(branched.state.pick_decisions, ())
+        self.assertFalse(history.can_redo)
+        with self.assertRaises(ValueError):
+            history.preview(replace(branched.state, interval_actions=()), "Discard historical action")
+
+    def test_decision_does_not_assert_pairing_fit_or_group_review(self):
+        from seisslate.analysis import analyze
+        from seisslate.evidence import PickDecision
+        from seisslate.groups import load_group_csv
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "groups.csv"
+            path.write_text("group_id,start_utc,end_utc,duration_s\nG1,2000-01-01T00:00:00Z,,1\n")
+            groups = load_group_csv(path)
+        first, *others = self.state.blows
+        state = replace(self.state, blows=(replace(first, group_id="G1"), *others), groups=groups)
+        decision = PickDecision(
+            "B01", "original", self.original.ref(360), "unresolved", reason="Emergent onset", reviewer="Analyst",
+        )
+        reviewed = self.api.set_pick_decision(state, self.catalog, decision)
+        self.assertEqual(analyze(self.catalog, state, reviewed), analyze(self.catalog, state, state))
+        self.assertFalse(reviewed.groups[0].reviewed)
+        self.assertEqual(reviewed.blows[0].pair_status, "confirmed")
+        reviewed_group = self.api.set_group_reviewed(reviewed, "G1", True)
+        self.assertEqual(reviewed_group.pick_decisions, (decision,))
+
+    def test_legacy_save_omits_preview_and_rejects_applied_records_even_beyond_cursor(self):
+        from seisslate.evidence import PickDecision
+        from seisslate.session import load_session, save_session
+
+        history = self.api.ReviewHistory(self.state)
+        decision = PickDecision("B01", "original", self.original.ref(360), "candidate")
+        state = self.api.set_pick_decision(self.state, self.catalog, decision)
+        history.preview(state, "Propose sample")
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session.json"
+            save_session(path, self.catalog, history)
+            saved = path.read_bytes()
+            _, reopened = load_session(path)
+            self.assertEqual(reopened.current.state, self.state)
+            history.apply()
+            history.undo()
+            with self.assertRaises(ValueError):
+                save_session(path, self.catalog, history)
+            self.assertEqual(path.read_bytes(), saved)
 
     def test_missing_reviewed_pick_can_be_supplied_without_changing_its_partner(self):
         blow = self.state.blows[2]
