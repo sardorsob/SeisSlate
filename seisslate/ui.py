@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
+from importlib.metadata import PackageNotFoundError, version
 from math import nextafter
 from pathlib import Path
+from platform import python_version
+from time import time_ns
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
@@ -16,14 +19,16 @@ from pyrocko.gui.snuffler.snuffling import Snuffling
 from pyrocko.trace import Trace
 
 from .analysis import Analysis, analyze
+from .evidence import PickDecision, RawConfirmation, RawEvidenceView
 from .example import load_example
 from .groups import GroupWindow, inspect_group, load_group_csv
+from .raw_view import RAW_ORDINATE_SCALE, RawView
 from .review import (
-    Blow, Pick, Receiver, ReviewHistory, ReviewState, Role, add_blow, add_groups, mask_spans,
+    Blow, Pick, Receiver, ReviewHistory, ReviewState, Revision, Role, add_blow, add_groups, mask_spans,
     move_pick, nudge_pick, restore_spans, set_geometry, set_inclusion,
-    set_group_reviewed, set_pair_status,
+    set_group_reviewed, set_pair_status, set_pick_decision,
 )
-from .sources import NS_PER_SECOND, Segment, SourceCatalog, load_source
+from .sources import NS_PER_SECOND, SampleSpan, Segment, SourceCatalog, load_source, utc_ns
 
 
 ROLES: tuple[Role, Role] = ("original", "calibration")
@@ -37,6 +42,17 @@ def _utc(nanoseconds: int) -> str:
     seconds, remainder = divmod(nanoseconds, NS_PER_SECOND)
     stamp = datetime(1970, 1, 1) + timedelta(seconds=seconds)
     return f"{stamp.isoformat()}.{remainder:09d}Z"
+
+
+def _capture_versions() -> tuple[tuple[str, str], ...]:
+    versions = [("Python", python_version())]
+    for name in ("SeisSlate", "numpy", "matplotlib", "PyQt5", "pyrocko"):
+        try:
+            release = version(name)
+        except PackageNotFoundError:
+            release = "unknown (unpackaged runtime)"
+        versions.append((name, release))
+    return tuple(versions)
 
 
 def _marker_ns(seconds) -> int:
@@ -84,6 +100,11 @@ class Workbench(qc.QObject):
         self.saved_revision = None
         self.buttons: dict[str, qw.QPushButton] = {}
         self.plot_blow_ids: tuple[str, ...] = ()
+        self._evidence_target: tuple[str, Role] | None = None
+        self._raw_draft: Revision | None = None
+        self._raw_confirmation: RawConfirmation | None = None
+        self._raw_dirty = True
+        self._raw_gap = False
 
         window.setWindowTitle("SeisSlate")
         window.resize(1440, 920)
@@ -182,10 +203,11 @@ class Workbench(qc.QObject):
         self.button(row, "add", "Add blow…", self.new_blow)
         self.button(row, "geometry", "Distances…", self.change_geometry)
         self.button(row, "pairing", "Pair status…", self.change_pairing)
+        self.button(row, "raw_review", "Review raw &evidence", self.open_raw_review)
         layout.addLayout(row)
 
         self.reason = qw.QLineEdit()
-        self.reason.setPlaceholderText("Reason for edit (optional)")
+        self.reason.setPlaceholderText("Reason for edit or raw review")
         self.reason.setAccessibleName("Reason for edit")
         panel_layout.addWidget(self.reason)
         row = qw.QHBoxLayout()
@@ -197,7 +219,7 @@ class Workbench(qc.QObject):
         self.buttons["undo"].setShortcut("Ctrl+Z")
         self.buttons["redo"].setShortcut("Ctrl+Shift+Z")
 
-        help_text = qw.QLabel("Double-click a trace, then click to mark a point or drag to mark an interval.")
+        help_text = qw.QLabel("Double-click a trace, then click for a point or drag for an interval.")
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
         self.status = qw.QLabel()
@@ -205,12 +227,264 @@ class Workbench(qc.QObject):
         self.status.setWordWrap(True)
         panel_layout.addWidget(self.status)
         window.add_panel("Paired review", panel, visible=True, where=qc.Qt.RightDockWidgetArea)
+        self.create_evidence_panel()
+        self.role.currentIndexChanged.connect(self.update_controls)
 
         if initial is not None:
             self.set_session(*initial)
         else:
             self.draw_results()
             self.update_controls()
+
+    def create_evidence_panel(self):
+        panel = qw.QWidget()
+        layout = qw.QVBoxLayout(panel)
+        for name in ("origin", "summary", "notice"):
+            label = qw.QLabel()
+            label.setTextFormat(qc.Qt.PlainText)
+            label.setWordWrap(True)
+            setattr(self, f"evidence_{name}", label)
+        layout.addWidget(self.evidence_origin)
+        layout.addWidget(self.evidence_summary)
+        self.raw_view = RawView()
+        layout.addWidget(self.raw_view)
+
+        grid = qw.QGridLayout()
+        fields = (
+            ("start", "First &sample", 0, 0), ("stop", "&Exclusive stop", 0, 2),
+            ("lower", "&Lower inclusive", 1, 0), ("upper", "&Upper inclusive", 1, 2),
+            ("reviewer", "&Reviewer label", 2, 0), ("intended", "&Intended UTC (ISO)", 3, 0),
+        )
+        for name, title, row, column in fields:
+            edit = qw.QLineEdit()
+            label = qw.QLabel(title)
+            label.setBuddy(edit)
+            grid.addWidget(label, row, column)
+            grid.addWidget(edit, row, column + 1, 1, 3 if name == "intended" else 1)
+            setattr(self, f"evidence_{name}", edit)
+            if name != "reviewer":
+                edit.textChanged.connect(self._raw_inputs_changed)
+            if name == "intended":
+                self.evidence_intended_label = label
+        self.evidence_status = qw.QComboBox()
+        status_label = qw.QLabel("&Decision")
+        status_label.setBuddy(self.evidence_status)
+        grid.addWidget(status_label, 2, 2)
+        grid.addWidget(self.evidence_status, 2, 3)
+        layout.addLayout(grid)
+        row = qw.QHBoxLayout()
+        self.button(row, "show_raw_span", "&Show raw span", self.show_raw_span)
+        self.button(row, "confirm_raw_review", "&Confirm review", self.confirm_raw_review)
+        row.addStretch()
+        layout.addLayout(row)
+        layout.addWidget(self.evidence_notice)
+        scroll = qw.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(qw.QFrame.NoFrame)
+        scroll.setMinimumHeight(170)
+        scroll.setWidget(panel)
+        self.window.setCorner(qc.Qt.BottomRightCorner, qc.Qt.RightDockWidgetArea)
+        self.window.add_panel("Raw pick evidence", scroll, where=qc.Qt.BottomDockWidgetArea)
+        self.evidence_dock = scroll.parentWidget()
+        self.close_raw_review()
+
+    def close_raw_review(self):
+        self._evidence_target = None
+        self._raw_dirty = True
+        self._raw_gap = False
+        self.raw_view.clear()
+        for field in (self.evidence_start, self.evidence_stop, self.evidence_lower,
+                      self.evidence_upper, self.evidence_intended):
+            field.clear()
+        self.evidence_status.clear()
+        self.evidence_notice.clear()
+        self.evidence_dock.hide()
+        self.describe_evidence()
+
+    def _raw_inputs_changed(self, *_):
+        self._raw_dirty = True
+        self.evidence_notice.setText("Show the edited span before confirming your review.")
+
+    def open_raw_review(self):
+        if self._raw_draft is not None:
+            self.evidence_dock.show()
+            self.evidence_dock.raise_()
+            return
+        if self.history.draft is not None:
+            raise ValueError("Apply or cancel the active preview first.")
+        blow, role = self.require_blow(), self.role_for_pick()
+        self._evidence_target = blow.blow_id, role
+        point = getattr(blow, role).reviewed_ref
+        decision = self._applied_pick_decision()
+        span = decision.inspection_span if decision is not None else None
+        intended = decision.intended_utc_ns if decision is not None else getattr(blow, role).imported_ns
+        self.evidence_intended.setVisible(point is None)
+        self.evidence_intended_label.setVisible(point is None)
+        self.evidence_lower.setEnabled(point is not None)
+        self.evidence_upper.setEnabled(point is not None)
+        self.evidence_start.setText(str(span.start) if span else "")
+        self.evidence_stop.setText(str(span.stop) if span else "")
+        self.evidence_lower.setText(str(decision.lower_ref.sample_index) if decision and decision.lower_ref else "")
+        self.evidence_upper.setText(str(decision.upper_ref.sample_index) if decision and decision.upper_ref else "")
+        self.evidence_intended.setText(_utc(intended) if point is None and intended is not None else "")
+        self.evidence_status.clear()
+        if point is not None:
+            self.evidence_status.addItem("Candidate", "candidate")
+            self.evidence_status.addItem("Accepted", "accepted")
+        self.evidence_status.addItem("Unresolved", "unresolved")
+        if decision is not None:
+            self.evidence_status.setCurrentIndex(self.evidence_status.findData(decision.status))
+        self.raw_view.clear()
+        self._raw_dirty = True
+        self._raw_gap = False
+        self.evidence_dock.show()
+        self.evidence_dock.raise_()
+        self.window.resizeDocks([self.evidence_dock], [500], qc.Qt.Vertical)
+        self.describe_evidence()
+        self.update_controls()
+        if point is not None or intended is not None:
+            self.show_raw_span()
+            self.raw_view.sample_control.setFocus()
+        else:
+            self.evidence_notice.setText("Enter the intended UTC for this unresolved arrival.")
+            self.evidence_intended.setFocus()
+
+    def _applied_pick_decision(self) -> PickDecision | None:
+        return next((item for item in self.state().pick_decisions if item.target == self._evidence_target), None)
+
+    def show_raw_span(self):
+        if self._evidence_target is None:
+            raise ValueError("Open a raw review for a blow and receiver first.")
+        blow_id, role = self._evidence_target
+        point = getattr(self.state().blow(blow_id), role).reviewed_ref
+        self._raw_gap = False
+        if point is not None:
+            segment = self.catalog.segment(point)
+            anchor = point.sample_index
+        else:
+            intended = utc_ns(self.evidence_intended.text().strip())
+            receiver = self.receivers[role]
+            segment = next((segment for segment in self.segments
+                            if segment.channel == receiver.channel and segment.start_ns <= intended
+                            < segment.start_ns + segment.npts * segment.period_ns), None)
+            if segment is None:
+                self.raw_view.clear()
+                self._raw_gap = True
+                self._raw_dirty = False
+                self.evidence_notice.setText("Raw evidence unavailable at the intended UTC. You can record an unresolved decision.")
+                self.describe_evidence()
+                return
+            anchor = segment.lower_bound(intended)
+
+        start_text, stop_text = self.evidence_start.text().strip(), self.evidence_stop.text().strip()
+        if not (start_text or stop_text):
+            start_text, stop_text = str(max(0, anchor - 25)), str(min(segment.npts, anchor + 26))
+            self.evidence_start.setText(start_text)
+            self.evidence_stop.setText(stop_text)
+        try:
+            span = SampleSpan(segment.segment_id, int(start_text), int(stop_text))
+        except ValueError as error:
+            raise ValueError("Enter integer first and exclusive stop samples for a nonempty raw span.") from error
+        lower, upper = self.evidence_lower.text().strip(), self.evidence_upper.text().strip()
+        bounds = None
+        if lower or upper:
+            try:
+                bounds = segment.ref(int(lower)), segment.ref(int(upper))
+            except ValueError as error:
+                raise ValueError("Enter both inclusive bounds as source sample indices.") from error
+        self.raw_view.show_span(segment, span, point=point, bounds=bounds)
+        self._raw_dirty = False
+        if self._raw_confirmation is not None and self.displayed_raw_evidence() != self._raw_confirmation.view:
+            self._raw_confirmation = None
+        if self._raw_draft is None:
+            self.evidence_notice.setText("Inspect the raw samples and confirm your review. Enter a reason in the review panel.")
+        elif self._raw_confirmation is None:
+            self.evidence_notice.setText("Confirm the current raw review before Apply.")
+        else:
+            self.evidence_notice.setText(f"{self._raw_draft.reason} preview ready. Apply or Cancel.")
+        self.describe_evidence()
+
+    def displayed_raw_evidence(self) -> RawEvidenceView | None:
+        view = self.raw_view.view
+        if view is None:
+            return None
+        return RawEvidenceView(view.source_hash, view.channel, view.span, view.display_start_ns,
+                               view.display_stop_ns, view.point, view.bounds, RAW_ORDINATE_SCALE)
+
+    def _raw_review_decision(self, view: RawEvidenceView | None) -> PickDecision:
+        if self._evidence_target is None:
+            raise ValueError("Open a raw review for a blow and receiver first.")
+        if self._evidence_target != (self.selected_blow_id, self.role.currentData()):
+            raise ValueError("Open the raw review for the selected blow and receiver before confirming.")
+        if self._raw_dirty:
+            raise ValueError("Show the edited raw span, then confirm the current review.")
+        blow_id, role = self._evidence_target
+        point = getattr(self.state().blow(blow_id), role).reviewed_ref
+        if view is not None and view.point != point:
+            raise ValueError("The reviewed point changed. Show its raw span again before confirming.")
+        if view is None and not (point is None and self._raw_gap):
+            raise ValueError("A displayed raw span is required to confirm this review.")
+        if view is not None and not self.evidence_reviewer.text().strip():
+            raise ValueError("Enter a local reviewer label before confirming raw evidence.")
+        lower, upper = view.bounds if view is not None and view.bounds is not None else (None, None)
+        return PickDecision(
+            blow_id, role, point, self.evidence_status.currentData(),
+            lower_ref=lower, upper_ref=upper, reason=self.reason.text().strip(),
+            reviewer=self.evidence_reviewer.text().strip(),
+            intended_utc_ns=utc_ns(self.evidence_intended.text().strip()) if point is None else None,
+            inspection_span=view.span if view is not None else None,
+        )
+
+    def confirm_raw_review(self):
+        if self.history.draft is not self._raw_draft:
+            raise ValueError("Apply or cancel the other active preview first.")
+        view = self.displayed_raw_evidence()
+        decision = self._raw_review_decision(view)
+        state = set_pick_decision(self.state(), self.catalog, decision)
+        origin = f"{decision.blow_id} · {decision.role.capitalize()}"
+        self._raw_draft = self.history.preview(state, f"{origin} raw review")
+        self._raw_confirmation = None
+        self.describe_group()
+        self.update_controls()
+        if view is not None:
+            self._raw_confirmation = self.history.confirm_current_pick_evidence(self.catalog, decision, view)
+        self.evidence_notice.setText(f"{origin} preview ready. Apply or Cancel.")
+
+    def describe_evidence(self):
+        if self._evidence_target is None:
+            self.evidence_origin.setText("Choose a blow and receiver, then open Review raw evidence.")
+            self.evidence_summary.clear()
+            return
+        blow_id, role = self._evidence_target
+        point = getattr(self.state().blow(blow_id), role).reviewed_ref
+        location = f"Sample {point.sample_index} · {_utc(self.catalog.time_ns(point))}" if point else "No reviewed point"
+        self.evidence_origin.setText(f"{blow_id} · {role.capitalize()} · {self.receivers[role].channel} · {location}")
+        decision = self._applied_pick_decision()
+        if decision is None:
+            self.evidence_summary.setText("Decision legacy-unassessed. Raw evidence not recorded.")
+            return
+        history_status = f"Historical decision {decision.status}"
+        if decision.reviewer:
+            history_status += f" by {decision.reviewer}"
+        if decision.reason:
+            history_status += f" · {decision.reason}"
+        if decision.evidence_id is None:
+            self.evidence_summary.setText(f"{history_status}. Raw evidence unavailable.")
+            return
+        replay = self.history.replay_pick_evidence(self.catalog, blow_id, role, view=self.displayed_raw_evidence())
+        details = [history_status, "Attestation current" if replay.attestation_current else "Attestation stale or unavailable",
+                   replay.source_identity.replace("_", " "), replay.raw_samples.replace("_", " ")]
+        if replay.grid_matches is not None:
+            details.append("Sampling grid matches" if replay.grid_matches else "Sampling grid differs")
+        if replay.method_supported is False:
+            details.append("Recorded method unsupported")
+        if replay.recorded_view_valid is False:
+            details.append("Recorded view is invalid")
+        if replay.view_restored is not None:
+            details.append("View restored" if replay.view_restored else "Displayed view differs")
+        if replay.masks_changed:
+            details.append("Mask changed within recorded support. Confirm a new raw review.")
+        self.evidence_summary.setText(" · ".join(details))
 
     def create_group_panel(self):
         panel = qw.QWidget()
@@ -322,13 +596,17 @@ class Workbench(qc.QObject):
         self.waveforms.cleanup()
         self.waveforms.add_traces(traces)
         self._active = catalog, history
+        self._raw_draft = None
+        self._raw_confirmation = None
+        self.close_raw_review()
         self.segments, self.receivers = segments, receivers
         self.selected_blow_id = history.current.state.blows[0].blow_id if history.current.state.blows else None
         self.selected_group_id = None
         self.session_path = path
         self.saved_revision = self.history_stamp()
         self.source_label.setText(
-            f"Original  {receivers['original'].channel}   ·   Calibration  {receivers['calibration'].channel}"
+            f"Original  {receivers['original'].channel}   ·   Calibration  {receivers['calibration'].channel}\n"
+            "Waveform navigation view; processing not recorded."
         )
         self.source_label.setToolTip(history.current.state.timing_evidence or "Receiver timing evidence not recorded.")
         self.reason.clear()
@@ -698,6 +976,21 @@ class Workbench(qc.QObject):
         draft = self.history.draft
         pending = draft is not None
         selected = self.selected_blow_id is not None
+        evidence_pending = self._raw_draft is not None
+        if self._evidence_target is not None:
+            if evidence_pending:
+                with qc.QSignalBlocker(self.role):
+                    self.role.setCurrentIndex(self.role.findData(self._evidence_target[1]))
+            elif self._evidence_target != (self.selected_blow_id, self.role.currentData()):
+                self.close_raw_review()
+        self.role.setEnabled(not evidence_pending)
+        self.table.setEnabled(not evidence_pending)
+        self.buttons["raw_review"].setEnabled(evidence_pending or (
+            selected and not pending and self.role.currentData() in ROLES
+        ))
+        can_edit_evidence = self._evidence_target is not None and (not pending or evidence_pending)
+        for key in ("show_raw_span", "confirm_raw_review"):
+            self.buttons[key].setEnabled(can_edit_evidence)
         for key in ("earlier", "later", "point", "inclusion", "geometry", "pairing"):
             self.buttons[key].setEnabled(selected and not pending)
         for key in ("mask", "restore", "add"):
@@ -713,7 +1006,8 @@ class Workbench(qc.QObject):
         self.save_action.setEnabled(not pending)
         self.export_action.setEnabled(not pending)
         if draft is not None:
-            self.status.setText(f"Preview • {draft.reason}. Blow table and fit show the applied revision.")
+            suffix = "Apply or Cancel." if evidence_pending else "Blow table and fit show the applied revision."
+            self.status.setText(f"Preview • {draft.reason}. {suffix}")
         else:
             saved = " · unsaved changes" if self.history_stamp() != self.saved_revision else ""
             self.status.setText(f"Applied revision {self.history.current.revision_id}{saved}")
@@ -735,6 +1029,7 @@ class Workbench(qc.QObject):
         self.render_markers()
         self.describe_selection()
         self.update_controls()
+        self.describe_evidence()
 
     def describe_selection(self):
         blow = self.selected_blow()
@@ -757,6 +1052,8 @@ class Workbench(qc.QObject):
         self.details.setText("  ·  ".join((blow.blow_id, *descriptions, row.reason)).rstrip(" ·"))
 
     def select_blow(self, blow_id, *, zoom=True):
+        if self._raw_draft is not None and blow_id != self.selected_blow_id:
+            return
         if not any(blow.blow_id == blow_id for blow in self.state().blows):
             return
         self.selected_blow_id = blow_id
@@ -789,7 +1086,10 @@ class Workbench(qc.QObject):
         if items:
             blow_id = self.table.item(items[0].row(), 0).text()
             if blow_id != self.selected_blow_id:
-                self.select_blow(blow_id)
+                if self._raw_draft is None:
+                    self.select_blow(blow_id)
+                else:
+                    self.fill_rows()
 
     def plot_selected(self, event):
         if event.artist is self.plot_points and len(event.ind) == 1:
@@ -819,6 +1119,8 @@ class Workbench(qc.QObject):
         return role
 
     def preview(self, state, reason):
+        if self._raw_draft is not None:
+            raise ValueError("Apply or cancel the raw review preview first.")
         self.history.preview(state, self.reason.text().strip() or reason)
         self.render_markers()
         if state.groups != self.state().groups:
@@ -828,12 +1130,33 @@ class Workbench(qc.QObject):
         self.update_controls()
 
     def apply(self):
-        self.history.apply()
+        if self._raw_draft is None:
+            self.history.apply()
+        else:
+            view = self.displayed_raw_evidence()
+            decision = self._raw_review_decision(view)
+            if (self.history.draft is not self._raw_draft
+                    or decision not in self._raw_draft.state.pick_decisions):
+                raise ValueError("Confirm the edited raw review before Apply.")
+            if view is not None:
+                if self._raw_confirmation is None:
+                    raise ValueError("Confirm the current raw view before Apply.")
+                self.history.apply_with_evidence(self.catalog, self._raw_confirmation, view,
+                                                 captured_utc_ns=time_ns(), software_versions=_capture_versions())
+            else:
+                self.history.apply()
+            self._raw_draft = None
+            self._raw_confirmation = None
+            self.evidence_notice.setText("Review applied.")
         self.reason.clear()
         self.refresh()
 
     def cancel(self):
         self.history.cancel()
+        if self._raw_draft is not None:
+            self._raw_draft = None
+            self._raw_confirmation = None
+            self.evidence_notice.setText("Review preview cancelled.")
         self.refresh()
 
     def navigate(self, move):
