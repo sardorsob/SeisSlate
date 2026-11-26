@@ -113,9 +113,6 @@ class LandslideWorksheet(QtWidgets.QWidget):
         layout.addWidget(split)
 
         self._refresh_table()
-        self.table.resizeColumnsToContents()
-        headers = self.table.horizontalHeader().length() + self.table.verticalHeader().width()
-        self.table.setMinimumWidth(headers + 22)
         self.table.setCurrentCell(0, 0)
 
     @property
@@ -139,6 +136,9 @@ class LandslideWorksheet(QtWidgets.QWidget):
                     item.setToolTip(f"{STATUS_TEXT[boundary.status]}\n{boundary.reason}".rstrip())
                 elif column == 4:
                     item.setToolTip(result.duration_status.replace("_", " "))
+        self.table.resizeColumnsToContents()
+        headers = self.table.horizontalHeader().length() + self.table.verticalHeader().width()
+        self.table.setMinimumWidth(headers + 22)
 
     def _select(self, *_):
         self._reset_editor()
