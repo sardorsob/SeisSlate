@@ -14,6 +14,8 @@ Review a pick against its raw samples, record onset bounds and a reason, then sa
 
 The example includes closely spaced strikes, a deliberately mistimed pick, and an arrival missing because of a recording gap. The fit relates signed distance difference in metres to signed arrival delay in seconds, both calculated as original minus calibration. The two imported reference fits use all available pairs and the strict interval `−0.06 < delay < 0.08` seconds. Subsequent review edits leave that baseline fixed. The displayed slope describes the numerical fit. Interpreting field velocity requires evidence about blow pairing, clocks and geometry. [Baseline table](fixtures/synthetic/baseline.csv) · [Fixture manifest](fixtures/synthetic/expected.json)
 
+A separate Ellsworth Glacier exercise compares station-and-band signal boundary review with stock Snuffler and ObsPy. The exercise uses public recordings and a held-back USGS reference. [Landslide pilot](docs/pilot-validation.md#review-signal-boundaries-at-ellsworth-glacier)
+
 ## Install the desktop pilot
 
 From the checkout on Windows x64 with Python 3.13:
