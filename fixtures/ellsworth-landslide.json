@@ -1,0 +1,69 @@
+{
+  "case_id": "ellsworth-glacier-2022",
+  "start_utc": "2022-09-15T05:00:00Z",
+  "stop_utc": "2022-09-15T05:07:30Z",
+  "channels": [
+    "AK.SWD..BHZ",
+    "AK.SLK..BHZ",
+    "AK.CAPN..BHZ",
+    "AK.Q23K..BHZ"
+  ],
+  "sources": [
+    {
+      "path": "../data/ellsworth/AK.SWD..BHZ.mseed",
+      "sha256": "91e447344445c1167ee99e43ea1a39527cec08f4d0b2e76afd38e8e789b4c1b5"
+    },
+    {
+      "path": "../data/ellsworth/AK.SLK..BHZ.mseed",
+      "sha256": "fda5fb6946c866d8bc23799c18ec5067ccdec07cb9f2c6f7a932f948dcfc3d82"
+    },
+    {
+      "path": "../data/ellsworth/AK.CAPN..BHZ.mseed",
+      "sha256": "a22ca901151412ec6ba546dc833c16d81edfcdf6c2966e45f660f1d077f7c60c"
+    }
+  ],
+  "provenance": {
+    "network_doi": "10.7914/SN/AK",
+    "software_doi": "10.5066/P13NSNIZ",
+    "waveform_and_metadata": {
+      "AK.SWD..BHZ": {
+        "dataselect_url": "https://service.earthscope.org/fdsnws/dataselect/1/query?net=AK&sta=SWD&loc=--&cha=BHZ&starttime=2022-09-15T04:49:34&endtime=2022-09-15T05:17:44&nodata=404",
+        "stationxml_url": "https://service.earthscope.org/fdsnws/station/1/query?net=AK&sta=SWD&loc=--&cha=BHZ&starttime=2022-09-15T04:49:34&endtime=2022-09-15T05:17:44&nodata=404&level=response",
+        "stationxml_retrieval_sha256": "1b288548cdff0319d6527900b1c4454fe017733ff42c2e4785cf1dccd85e9fce",
+        "epoch_start_date_utc": "2016-08-29",
+        "epoch_end_utc": null,
+        "sample_rate_hz": 50,
+        "included_in_review": true
+      },
+      "AK.SLK..BHZ": {
+        "dataselect_url": "https://service.earthscope.org/fdsnws/dataselect/1/query?net=AK&sta=SLK&loc=--&cha=BHZ&starttime=2022-09-15T04:49:34&endtime=2022-09-15T05:17:44&nodata=404",
+        "stationxml_url": "https://service.earthscope.org/fdsnws/station/1/query?net=AK&sta=SLK&loc=--&cha=BHZ&starttime=2022-09-15T04:49:34&endtime=2022-09-15T05:17:44&nodata=404&level=response",
+        "stationxml_retrieval_sha256": "4330782836ea4aea27691fb31bfca0b730209a2a4314b0e058a7a3273a2d3a41",
+        "epoch_start_date_utc": "2013-07-01",
+        "epoch_end_utc": null,
+        "sample_rate_hz": 50,
+        "included_in_review": true
+      },
+      "AK.CAPN..BHZ": {
+        "dataselect_url": "https://service.earthscope.org/fdsnws/dataselect/1/query?net=AK&sta=CAPN&loc=--&cha=BHZ&starttime=2022-09-15T04:49:34&endtime=2022-09-15T05:17:44&nodata=404",
+        "stationxml_url": "https://service.earthscope.org/fdsnws/station/1/query?net=AK&sta=CAPN&loc=--&cha=BHZ&starttime=2022-09-15T04:49:34&endtime=2022-09-15T05:17:44&nodata=404&level=response",
+        "stationxml_retrieval_sha256": "6a35a8705158d83dea809935c0c58b52711975ba4d852205c8f649a499442755",
+        "epoch_start_date_utc": "2014-05-21",
+        "epoch_end_utc": null,
+        "sample_rate_hz": 50,
+        "included_in_review": true
+      },
+      "AK.Q23K..BHZ": {
+        "dataselect_url": "https://service.earthscope.org/fdsnws/dataselect/1/query?net=AK&sta=Q23K&loc=--&cha=BHZ&starttime=2022-09-15T04:49:34&endtime=2022-09-15T05:17:44&nodata=404",
+        "stationxml_url": "https://service.earthscope.org/fdsnws/station/1/query?net=AK&sta=Q23K&loc=--&cha=BHZ&starttime=2022-09-15T04:49:34&endtime=2022-09-15T05:17:44&nodata=404&level=response",
+        "stationxml_retrieval_sha256": "fcaafa4d569e290638bdeb35e6c0918e410f697e807a96f6f9a13a9be3d5caed",
+        "epoch_start_date_utc": "2019-09-24",
+        "epoch_end_utc": null,
+        "sample_rate_hz": 50,
+        "included_in_review": false
+      }
+    },
+    "control": "AK.Q23K..BHZ is deliberately withheld from the review pack to test unavailable coverage."
+  },
+  "reference_sha256": "77ea805324f59daaf0dca0aa55c8358f700013c85875033685ae9148d6d34a3e"
+}
