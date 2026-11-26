@@ -130,12 +130,44 @@ The [Ellsworth case manifest](../fixtures/ellsworth-landslide.json) records thre
 
 A coordinator can download the [pinned author CSV](https://code.usgs.gov/api/v4/projects/18158/repository/files/EXAMPLE.csv/raw?ref=400ff9d6c9ac94363b3be1412c6d2fd6f210d8ed) and retain it separately until review is complete. The author CSV checksum in the case manifest matches the software release at tag `1.0.0`. This case uses the software example. The separate global ScienceBase attachment could not be retrieved for this run.
 
+### Run both review paths
+
+From the checkout, use the installed desktop environment and an existing `outputs` directory. Preparation writes a new packet with checksummed copies of the original files, a blank review table, and MiniSEED traces for stock Snuffler. Both paths use the same 450-second review interval.
+
+```sh
+python -m tools.landslide_pilot prepare fixtures/ellsworth-landslide.json outputs/ellsworth-pack
+python -m tools.landslide_pilot worksheet outputs/ellsworth-pack outputs/ellsworth-worksheet.json
+python -m tools.landslide_pilot snuffle outputs/ellsworth-pack outputs/ellsworth-review.markers
+```
+
+In the worksheet, select a channel and band, choose Onset or End, and click in the corresponding waveform to preview a pick. Use **−1 sample** or **+1 sample** to refine the preview, then enter a reason and choose **Apply**. For an unresolved boundary, choose its review status and give a reason. Use **Undo** to recover the earlier applied decision and save the result.
+
+For the comparator, copy `outputs/ellsworth-pack/review.csv` to `outputs/ellsworth-table.csv`. In Snuffler, double-click the named band trace to enter picking mode and place a plain point marker. Select the marker and press **1** for onset or **2** for end. Use one marker for each `identifiable` boundary. Leave markers off unresolved boundaries and record their choices and reasons in the table. Keep the prepared `unavailable` and `insufficient_support` states. Keep the supplied waveform processing settings. Close Snuffler to export its markers, then score the completed table with the reference calculation. [Snuffler picking controls](https://pyrocko.org/docs/current/apps/snuffler/manual.html#keystrokes)
+
+```sh
+python -m tools.landslide_pilot score outputs/ellsworth-pack outputs/ellsworth-table.csv outputs/ellsworth-review.markers outputs/ellsworth-baseline.json
+python -m tools.landslide_pilot reopen outputs/ellsworth-pack outputs/ellsworth-baseline.json
+python -m tools.landslide_pilot reopen outputs/ellsworth-pack outputs/ellsworth-worksheet.json
+```
+
+Supply the held-back CSV only after saving each reviewer’s first pass. The reveal records the original author values separately, including their timestamp precision.
+
+```sh
+python -m tools.landslide_pilot reveal outputs/ellsworth-pack outputs/ellsworth-worksheet.json data/ellsworth/EXAMPLE.csv outputs/ellsworth-author-reference.json
+```
+
+The pilot filters original recording units with a four-corner ObsPy Butterworth bandpass, forward and backward with zero initial states. It applies no response correction, taper or extra padding. The support rule withholds the first and last 2 seconds of each uninterrupted filter input for the high-frequency band and 200 seconds for the long-period band. Those guards define where a pick is eligible. The filtered samples still depend on the entire uninterrupted input. The packet records the filter, source and output fingerprints and the versions used for exact replay.
+
 ### Compare with Snuffler and ObsPy
 
-Give both reviewers the same raw sources, analysis span, processed waveform samples and status choices. Keep the authors’ annotations outside the first-pass packet. Use different matched cases and balance which interface each analyst uses first. Give both paths equivalent instructions, practice, and a prepared handoff workflow.
+Give both paths the same raw sources, analysis span, processed waveform samples and status choices. Start each independent reviewer with a fresh worksheet and keep their first saved files for comparison. Keep the authors’ annotations outside the first-pass packet. Use different matched cases and balance which interface each analyst uses first. Give both paths equivalent instructions, practice, and a prepared handoff workflow.
 
 1. Identify a clear signal and mark each visible boundary. Review another row where one boundary is uncertain. Preserve the visible boundary and give a reason for the other decision. Exercise a gap or unsupported edge as a separate control.
 2. Change an applied boundary, verify the change in the observed duration and save the reviewed state. Have a second analyst reopen the result and recover the channel and band, original sample indices, review reasons and measurement eligibility. Reveal the authors’ annotations afterward. Record differences in picks separately from failures to recover the measurements.
 3. Time preparation, review, correction and independent reopening. Count all assigned cases, critical errors, false-ready outcomes, missed eligible results and timeouts. One case can demonstrate feasibility. Use fresh, counterbalanced cases before estimating a repeatable time benefit. The exploratory target is at least 20% lower median within-reviewer total time with no increase in consequential errors. A go decision requires zero critical channel, band, sample, duration, review state or provenance errors.
 
-Use the worksheet duration only when two ordered boundaries have support in the same uninterrupted processed segment. An unresolved boundary leaves duration unavailable. The exercise measures the visible signal at that channel and band. The USGS study uses high-frequency duration and long-period maximum amplitude as different features. Technical replay does not reproduce the authors’ processing or measure source duration, volume, or detection accuracy. [Author picking and processing example](https://code.usgs.gov/ghsc/lhp/reference/landslide-volume-estimation/-/tree/1.0.0)
+Use the worksheet duration only when two ordered boundaries have support in the same uninterrupted processed segment. A conclusion of no identifiable signal requires complete eligible support through the requested review interval. An unresolved boundary leaves duration unavailable. The exercise measures the visible signal at that channel and band. The USGS study uses high-frequency duration and long-period maximum amplitude as different features. Technical replay does not reproduce the authors’ processing or measure source duration, volume, or detection accuracy. [Author picking and processing example](https://code.usgs.gov/ghsc/lhp/reference/landslide-volume-estimation/-/tree/1.0.0)
+
+### Ellsworth technical result
+
+In a scripted comparison on macOS with offscreen Qt, stock Snuffler loaded nine traces from the three channels. Pyrocko read back the same samples supplied to the worksheet for all six filtered traces. The two review paths agreed on all eight channel-and-band rows, including two unavailable rows and two one-sided decisions. Moving a scripted onset forward by one sample at 50 Hz shortened its interval by 0.02 s. Both reviews reopened from the relocated packet and the original waveform fingerprints still matched. The results establish technical agreement for the scripted decisions. The independent analyst comparison and native Windows exercise remain pending.
